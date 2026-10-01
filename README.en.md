@@ -30,6 +30,15 @@ This skill does not claim an unconditional cross-runtime session-start hook.
 It guarantees that once activated and working, durable state can be recovered
 in a genuinely new session.
 
+## Crash-safe process locks
+
+Linux/macOS use kernel-backed `flock`.  Windows uses kernel-backed file
+locking.
+
+Locks are automatically released when the owning process exits, including
+abnormal termination.  A lock file may remain on disk, but its existence does
+not mean the lock is still held.
+
 ## Design constraints
 
 - Python 3.10+ standard library only.

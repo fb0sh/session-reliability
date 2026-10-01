@@ -29,6 +29,12 @@ Skill activation 由 Host Agent Runtime 控制。
 本 Skill 自身不宣称拥有跨 Runtime 的无条件 session-start hook；它保证的是：
 一旦被激活并开始工作，持久化状态可以在后续真正的新 Session 中被恢复。
 
+## Crash-safe process locks
+
+Linux / macOS 使用 kernel-backed `flock`；Windows 使用 kernel-backed 文件锁。
+
+锁会在持有进程退出时由操作系统自动释放，包括异常终止或进程被杀。lock 文件本身可能继续存在，但“文件存在”不代表锁仍被持有。
+
 ## 设计约束
 
 - Python 3.10+，仅使用标准库。

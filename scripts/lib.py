@@ -162,6 +162,11 @@ class SessionIdentityConflict(SRError):
     kind = "session_identity_conflict"
 
 
+class SessionIdentityCorruption(SRError):
+    code = 9
+    kind = "session_identity_corruption"
+
+
 # ---------------------------------------------------------------------------
 # Time / IDs
 # ---------------------------------------------------------------------------
@@ -364,17 +369,24 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 class ProcessLock:
-    """A small cross-process exclusive lock.
+    """A small cross-process exclusive lock with crash-safe semantics.
 
-    On Unix it uses fcntl.flock(2).  On platforms without fcntl it degrades to
-    atomic create of a lock file with bounded retries.  Lock files are kept
-    rather than deleted so another process cannot acquire a stale inode.
+    POSIX uses ``fcntl.flock``.  Windows uses ``msvcrt.locking`` byte-range
+    locking.  Both are kernel-backed, so an abnormal process exit releases the
+    lock when the OS closes its file descriptor/handle.  Lock-file existence
+    never means the lock is currently held.  Lock files are intentionally kept
+    as stable inode/handle anchors.
+
+    Unknown platforms without either kernel backend keep a best-effort
+    ``O_CREAT|O_EXCL`` fallback for compatibility.  That fallback is not used
+    on Linux, macOS, or Windows and can leave stale lock files after a crash.
     """
 
     def __init__(self, path: Path, *, timeout: float = 10.0):
         self.path = Path(path)
         self.timeout = timeout
         self._fd: Optional[int] = None
+        self._backend: Optional[str] = None
         self._fallback_created = False
 
     def __enter__(self) -> "ProcessLock":
@@ -388,42 +400,116 @@ class ProcessLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
         if _HAS_FCNTL:
-            import fcntl  # type: ignore
+            self._acquire_flock(deadline)
+            return
+        if _IS_WINDOWS and _HAS_MSVCRT:
+            self._acquire_msvcrt(deadline)
+            return
+        self._acquire_exclusive_file_fallback(deadline)
 
-            self._fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
+    def release(self) -> None:
+        backend = self._backend
+        self._backend = None
+        if backend == "flock":
+            self._release_flock()
+        elif backend == "msvcrt":
+            self._release_msvcrt()
+        elif backend == "fallback":
+            self._release_exclusive_file_fallback()
+
+    # -- POSIX flock -----------------------------------------------------
+
+    def _acquire_flock(self, deadline: float) -> None:
+        import fcntl  # type: ignore
+
+        self._fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._backend = "flock"
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    self._release_flock()
+                    raise StoreError(f"failed to acquire lock {self.path}: {exc}") from exc
+                if time.monotonic() >= deadline:
+                    self._release_flock()
+                    raise StoreError(f"timed out waiting for lock: {self.path}")
+                time.sleep(0.025)
+
+    def _release_flock(self) -> None:
+        if self._fd is None:
+            return
+        import fcntl  # type: ignore
+
+        with contextlib.suppress(OSError):
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(self._fd)
+        self._fd = None
+
+    # -- Windows msvcrt --------------------------------------------------
+
+    def _acquire_msvcrt(self, deadline: float) -> None:
+        import msvcrt  # type: ignore
+
+        self._fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            if os.fstat(self._fd).st_size == 0:
+                os.write(self._fd, b"\0")
+                with contextlib.suppress(OSError):
+                    os.fsync(self._fd)
             while True:
+                os.lseek(self._fd, 0, os.SEEK_SET)
                 try:
-                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
+                    self._backend = "msvcrt"
                     return
                 except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                        self.release()
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        self._release_msvcrt()
                         raise StoreError(f"failed to acquire lock {self.path}: {exc}") from exc
                     if time.monotonic() >= deadline:
-                        self.release()
+                        self._release_msvcrt()
                         raise StoreError(f"timed out waiting for lock: {self.path}")
                     time.sleep(0.025)
-        # Windows / fallback: O_CREAT|O_EXCL gives an atomic lock file.
+        except Exception:
+            self._release_msvcrt()
+            raise
+
+    def _release_msvcrt(self) -> None:
+        if self._fd is None:
+            return
+        import msvcrt  # type: ignore
+
+        with contextlib.suppress(OSError):
+            os.lseek(self._fd, 0, os.SEEK_SET)
+            msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+        with contextlib.suppress(OSError):
+            os.close(self._fd)
+        self._fd = None
+
+    # -- unknown-platform fallback --------------------------------------
+
+    def _acquire_exclusive_file_fallback(self, deadline: float) -> None:
+        # This path is not used on Linux, macOS, or Windows.  It cannot be
+        # crash-safe because it has no kernel lock primitive; a crash can leave
+        # a stale lock file that must be cleaned up manually.
         while True:
             try:
                 fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
                 os.close(fd)
                 self._fallback_created = True
+                self._backend = "fallback"
                 return
             except FileExistsError:
                 if time.monotonic() >= deadline:
-                    raise StoreError(f"timed out waiting for lock: {self.path}")
+                    raise StoreError(
+                        f"timed out waiting for non-crash-safe fallback lock: {self.path}"
+                    )
                 time.sleep(0.05)
 
-    def release(self) -> None:
-        if _HAS_FCNTL and self._fd is not None:
-            import fcntl  # type: ignore
-
-            with contextlib.suppress(OSError):
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(self._fd)
-            self._fd = None
+    def _release_exclusive_file_fallback(self) -> None:
         if self._fallback_created:
             with contextlib.suppress(FileNotFoundError):
                 self.path.unlink()
@@ -436,6 +522,15 @@ try:
     _HAS_FCNTL = True
 except ImportError:  # pragma: no cover - exercised only on Windows
     _HAS_FCNTL = False
+
+_IS_WINDOWS = os.name == "nt"
+
+try:
+    import msvcrt as _msvcrt_probe  # noqa: F401
+
+    _HAS_MSVCRT = True
+except ImportError:  # pragma: no cover - exercised on non-Windows platforms
+    _HAS_MSVCRT = False
 
 
 def task_lock_path(store: Path, task_id: str) -> Path:
@@ -1188,12 +1283,22 @@ def update_index_session(store: Path, session_id: str, session: dict[str, Any]) 
 # ---------------------------------------------------------------------------
 
 
-def find_session_by_native_id(store: Path, native_session_id: str) -> list[dict[str, Any]]:
+def find_session_by_native_id(
+    store: Path,
+    native_session_id: str,
+    *,
+    tolerate_corrupt_session_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Return valid reliability sessions matching a runtime-native session id.
 
-    Scans session files directly; index.json is not authoritative.  Corrupt
-    session files are ignored for lookup so a single bad metadata file cannot
-    poison discovery.
+    Scans session files directly; index.json is not authoritative.  A
+    parseable session file that claims the requested native id is never
+    silently ignored just because other fields are corrupt.  Completely
+    unreadable JSON cannot contribute a reliable native-id claim and is skipped.
+
+    ``tolerate_corrupt_session_id`` is used only for explicit same-session
+    recovery: if a corrupt claimant's session_id equals that value, lookup
+    ignores it so the caller can back up and recreate the same session id.
     """
     matches: list[dict[str, Any]] = []
     sessions_dir = store / "sessions"
@@ -1202,17 +1307,42 @@ def find_session_by_native_id(store: Path, native_session_id: str) -> list[dict[
     for child in sorted(sessions_dir.glob("*.json")):
         try:
             session = load_json(child)
+        except StoreError:
+            continue
+        except CorruptionError:
+            # Completely unreadable JSON cannot contribute a reliable native-id
+            # claim.  Do not regex-scan it.
+            continue
+
+        version = session.get("schema_version")
+        if isinstance(version, int) and not isinstance(version, bool) and version > SCHEMA_VERSION:
+            raise FutureSchemaError(
+                f"{child} uses schema_version {version}, but this skill only supports up to {SCHEMA_VERSION}"
+            )
+
+        if session.get("native_session_id") != native_session_id:
+            continue
+
+        try:
             validate_session(session, where=str(child))
             if session.get("session_id") != child.stem:
                 raise SchemaError(f"session_id mismatch in {child}")
         except FutureSchemaError:
-            # A future-schema session must stop lookup.  Ignoring it could
-            # create a duplicate reliability session with the same native id.
             raise
-        except SRError:
-            continue
-        if session.get("native_session_id") == native_session_id:
-            matches.append(session)
+        except SRError as exc:
+            claimant_session_id = session.get("session_id")
+            if tolerate_corrupt_session_id is not None and claimant_session_id == tolerate_corrupt_session_id:
+                continue
+            raise SessionIdentityCorruption(
+                f"session {child} claims native_session_id {native_session_id!r} but its metadata is corrupt",
+                details={
+                    "session_file": str(child),
+                    "session_id": claimant_session_id,
+                    "native_session_id": native_session_id,
+                    "error": exc.message,
+                },
+            ) from exc
+        matches.append(session)
     return matches
 
 
@@ -1228,7 +1358,11 @@ def assert_native_session_id_available(
     session, but X may not be silently rebound to Y and one native id may not
     map to multiple reliability sessions.
     """
-    matches = find_session_by_native_id(store, native_session_id)
+    matches = find_session_by_native_id(
+        store,
+        native_session_id,
+        tolerate_corrupt_session_id=current_session_id,
+    )
     if not matches:
         return
     if len(matches) == 1 and matches[0].get("session_id") == current_session_id:
@@ -1322,6 +1456,40 @@ def _create_or_touch_session_locked(
             except SessionIdentityConflict:
                 raise
             except SRError:
+                # If the corrupt file is still parseable enough to declare a
+                # native identity or a different session id, do not silently
+                # steal or rebind it during recovery.
+                existing_native: Optional[str] = None
+                existing_session_id: Optional[str] = None
+                try:
+                    raw = load_json(path)
+                    if isinstance(raw, dict):
+                        existing_native = raw.get("native_session_id")
+                        existing_session_id = raw.get("session_id")
+                except SRError:
+                    existing_native = None
+                    existing_session_id = None
+
+                if existing_session_id is not None and existing_session_id != sid:
+                    raise SessionIdentityCorruption(
+                        f"session file {path} declares session_id {existing_session_id!r}, not {sid!r}",
+                        details={
+                            "session_file": str(path),
+                            "declared_session_id": existing_session_id,
+                            "requested_session_id": sid,
+                        },
+                    )
+                if native_session_id is not None and existing_native not in (None, native_session_id):
+                    raise SessionIdentityConflict(
+                        f"session {sid} already declares native_session_id {existing_native!r}; "
+                        f"refusing to rebind it to {native_session_id!r}",
+                        details={
+                            "session_id": sid,
+                            "existing_native_session_id": existing_native,
+                            "requested_native_session_id": native_session_id,
+                        },
+                    )
+
                 backup = path.with_name(f"{path.name}.corrupt.{_timestamp_compact()}.bak")
                 with contextlib.suppress(OSError):
                     shutil.copy2(path, backup)

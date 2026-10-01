@@ -68,7 +68,9 @@ CLI:
 
 See `references/cli.md` for exact command syntax.
 
-Normal recovery requires no event replay.
+Normal recovery requires no event replay.  Stale lock files do not themselves
+block recovery; lock ownership is kernel-backed and is released when the owning
+process exits.
 
 ## 3. Dirty recovery
 

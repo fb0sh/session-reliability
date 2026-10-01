@@ -41,8 +41,9 @@ Locks are advisory, cross-process, and short-lived.
 Implementation:
 
 ```text
-Unix/macOS: fcntl.flock(fd, LOCK_EX | LOCK_NB) with bounded retry
-Windows: O_CREAT|O_EXCL lock-file fallback with bounded retry
+POSIX / Linux / macOS: fcntl.flock(fd, LOCK_EX | LOCK_NB) with bounded retry
+Windows: msvcrt.locking(fd, LK_NBLCK, 1) with bounded retry
+Unknown platforms: O_CREAT|O_EXCL fallback (not crash-safe)
 ```
 
 Lock ordering is fixed:
@@ -73,6 +74,52 @@ Rules:
 5. Lock files may remain on disk as zero-length files; this is normal and not
    a deadlock.
 6. Index updates are separate; task truth is never in `index.json`.
+
+### Crash-safe process locks
+
+POSIX and Windows both use kernel-backed locks:
+
+```text
+POSIX  -> fcntl.flock
+Windows -> msvcrt.locking
+```
+
+If the owning process crashes, is killed, or exits without calling
+`release()`, the OS closes the file descriptor/handle and releases the lock.
+This is an invariant of the supported platforms.
+
+Lock-file existence does **not** mean lock ownership.  Lock files may remain
+on disk permanently as stable inode/handle anchors.  Recovery must never treat
+"file exists" as "locked"; it must attempt the kernel lock and respect the OS
+result.  The non-POSIX/non-Windows fallback is best-effort only and may leave a
+stale lock file after a crash.
+
+### Native identity corruption
+
+A parseable session JSON that declares a native_session_id is an identity claim
+even if other session fields are invalid.  Identity scan behavior:
+
+```text
+valid claimant
+-> normal match / uniqueness check
+
+corrupt claimant matching requested native id
+-> SessionIdentityCorruption; do not skip
+
+future-schema claimant
+-> FutureSchemaError; do not skip, do not create duplicate
+
+corrupt claimant with a different native id
+-> does not block other native ids
+
+completely unparseable JSON
+-> skipped for lookup; it cannot contribute a reliable native-id claim
+```
+
+Explicit same-session recovery is allowed only when the parseable corrupt file
+declares the same `session_id` and the same (or null) native id.  The file is
+backed up and recreated with the same reliability session id and native id.
+Another session id may not steal a corrupt claimant's native id.
 
 Mutation order:
 
@@ -373,7 +420,8 @@ index.
 ## 10. V1 limitations
 
 - Locks are advisory; a process that ignores the lock can still write.
-- `fcntl` is preferred on Unix; Windows uses a bounded lock-file fallback.
+- Linux/macOS use `fcntl.flock`; Windows uses `msvcrt.locking`.  Unknown
+  platforms fall back to a non-crash-safe `O_CREAT|O_EXCL` lock.
 - There is no distributed consensus across machines or network filesystems.
 - There is no background lease-renewal watcher; the Agent renews when it acts.
 - There is no automatic archive/delete cleanup.
