@@ -137,7 +137,9 @@ Options:
 ```
 
 If `--session-id` is supplied, the new task is attached to that session and an
-initial lease is written.  If it is omitted, the task is unowned; bind it with
+initial lease is written.  `--lease-seconds` sets the initial lease duration
+and persists it as `lease_duration_seconds`; later owner heartbeats keep that
+duration.  If `--session-id` is omitted, the task is unowned; bind it with
 `attach-session` or `resume` before any ordinary mutation.
 
 ## Steps
@@ -291,9 +293,14 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 `start-operation` also accepts `--operation-id` and
 `--side-effect` / `--no-side-effect`.
 
-Ordinary owner mutations automatically renew the task lease and refresh the
-session heartbeat.  `renew-lease` only extends the current owner's lease; it
-cannot change ownership or bind an unowned task.
+Ordinary owner mutations automatically renew the task lease using the task's
+persisted `lease_duration_seconds` (default 900) and refresh the session
+heartbeat.
+
+`attach-session --lease-seconds N` sets the new owner's lease duration.
+`renew-lease --lease-seconds N` extends the current owner's lease and updates
+the preferred duration used by later heartbeats.  `renew-lease` cannot change
+ownership or bind an unowned task.
 
 `finish-operation` usually uses `--operation-id <op-id>`; if omitted, the
 current active operation is resolved when unambiguous.
@@ -328,6 +335,8 @@ marked `outcome_unknown` and the task stays dirty until explicitly finished.
 `--force-takeover` is appropriate when the user explicitly confirms that the
 previous session failed, became unavailable, or cannot continue.  It records
 `TASK_TAKEOVER` with `forced=true` even if the previous lease is still valid.
+Task takeover transfers ownership of that task only; it does not expire the
+previous reliability session or clear its other active task binding.
 
 ## Lease and session attachment
 

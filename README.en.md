@@ -141,25 +141,29 @@ CLI flags take priority over environment variables.
 A task with an owner accepts mutations only from that owner session while its
 lease is valid.
 
-Successful owner mutations renew the lease automatically, so an active Agent
-does not need a separate manual heartbeat.  They also refresh the owning
-session's `last_seen_at`.
+Successful owner mutations renew the lease automatically using the task's
+persisted `lease_duration_seconds` (default 900), so a custom `--lease-seconds`
+value is not reset to the default by later heartbeats.  They also refresh the
+owning session's `last_seen_at`.
 
 Another session cannot mutate the task directly.  It must wait for lease
 expiry and take over, or become owner through an explicit attach/resume flow.
 
 If the user explicitly confirms that the previous session crashed, became
 unavailable, or cannot continue, a new session may use explicit force takeover
-even while the old lease is still valid.  After takeover, reconcile dirty and
-`outcome_unknown` operations before continuing.
+even while the old lease is still valid.  Task takeover transfers ownership of
+that task only; it does not mark the previous reliability session expired and
+does not clear the previous session's other active task.  After takeover,
+reconcile dirty and `outcome_unknown` operations before continuing.
 
 `renew-lease` only extends the current owner's lease; it never changes
 ownership.  An unowned task must be bound with `attach-session` or `resume`
 before ordinary mutation.
 
 When the runtime provides a native session id, `init` reuses an existing
-reliability session when possible.  Duplicate native-session-id mappings fail
-safely instead of choosing one at random.
+reliability session when possible.  `native_session_id` remains globally unique
+when present; duplicate mappings or explicit rebinds fail safely instead of
+choosing one at random or silently overwriting identity.
 
 ## Tests
 

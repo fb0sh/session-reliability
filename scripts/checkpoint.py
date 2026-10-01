@@ -98,7 +98,8 @@ def _mutate(
     enforce_lease: bool = True,
     renew_lease: bool = True,
     touch_session: bool = True,
-    lease_seconds: int = lib.DEFAULT_LEASE_SECONDS,
+    takeover_cleanup: bool = False,
+    lease_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
     workspace, store, session_id, task_id = lib.cli_context(args)
     lib.ensure_store(store)
@@ -113,6 +114,7 @@ def _mutate(
         enforce_lease=enforce_lease,
         renew_lease=renew_lease,
         touch_session=touch_session,
+        takeover_cleanup=takeover_cleanup,
         lease_seconds=lease_seconds,
     )
 
@@ -456,10 +458,14 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
 
 def cmd_renew_lease(args: argparse.Namespace) -> int:
     session_id = _require_session(args)
+    if not isinstance(args.lease_seconds, int) or isinstance(args.lease_seconds, bool) or args.lease_seconds <= 0:
+        raise lib.ValidationError("--lease-seconds must be a positive integer")
 
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         # mutate_task enforces that the caller is the current owner.  This
-        # command extends the lease; it must never change owner_session.
+        # command extends the lease and updates the preferred heartbeat
+        # duration; it must never change owner_session.
+        state["lease_duration_seconds"] = args.lease_seconds
         state["lease_expires_at"] = lib.lease_expiry_from_now(args.lease_seconds)
         return [("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": args.lease_seconds})]
 
@@ -472,44 +478,26 @@ def cmd_renew_lease(args: argparse.Namespace) -> int:
 
 def cmd_attach_session(args: argparse.Namespace) -> int:
     session_id = _require_session(args)
+    task_id = _require_task(args)
 
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        owner = state.get("owner_session")
-        lease_valid = lib.lease_is_valid(state.get("lease_expires_at"))
-        events: list[tuple[str, dict[str, Any]]] = []
-
-        if owner is None:
-            events.append(("TASK_ATTACHED", {"session_id": session_id}))
-        elif owner == session_id:
-            events.append(("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": args.lease_seconds}))
-        else:
-            if lease_valid and not args.force:
-                raise lib.LeaseConflict(
-                    f"task is leased to {owner} until {state.get('lease_expires_at')}",
-                    details={
-                        "reason": "lease_valid",
-                        "owner_session": owner,
-                        "lease_expires_at": state.get("lease_expires_at"),
-                    },
-                )
-            events.append(
-                (
-                    "TASK_TAKEOVER",
-                    {
-                        "from_session": owner,
-                        "to_session": session_id,
-                        "lease_expired": not lease_valid,
-                        "forced": bool(args.force and lease_valid),
-                    },
-                )
-            )
-        events.append(("SESSION_ATTACHED", {"session_id": session_id}))
-        state["owner_session"] = session_id
-        state["lease_expires_at"] = lib.lease_expiry_from_now(args.lease_seconds)
-        return events
+        return lib.apply_task_ownership_transfer(
+            state,
+            task_id=task_id,
+            session_id=session_id,
+            force=args.force,
+            lease_duration_seconds=args.lease_seconds,
+        )
 
     _emit_state(
-        _mutate(args, mutation, enforce_lease=False, renew_lease=False, touch_session=True),
+        _mutate(
+            args,
+            mutation,
+            enforce_lease=False,
+            renew_lease=False,
+            touch_session=True,
+            takeover_cleanup=True,
+        ),
         _store_from_args(args),
     )
     return 0

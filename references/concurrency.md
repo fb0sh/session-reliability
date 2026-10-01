@@ -139,7 +139,8 @@ Lease fields in `STATE.json`:
 ```json
 {
   "owner_session": "sr-A",
-  "lease_expires_at": "2026-09-30T22:55:00+00:00"
+  "lease_expires_at": "2026-09-30T22:55:00+00:00",
+  "lease_duration_seconds": 900
 }
 ```
 
@@ -148,6 +149,10 @@ Default lease duration:
 ```text
 15 minutes (900 seconds)
 ```
+
+`lease_duration_seconds` is optional for older V1 state files.  When absent,
+the implementation falls back to `DEFAULT_LEASE_SECONDS` (900) and
+materializes the field on the next owner mutation.
 
 Ownership and mutation rules:
 
@@ -161,7 +166,8 @@ Ownership and mutation rules:
 5. The current owner may continue after its lease expires; the next successful
    owner mutation renews the lease.
 6. Every successful ordinary mutation by the owner automatically renews
-   `lease_expires_at` and refreshes `sessions/<session-id>.json.last_seen_at`.
+   `lease_expires_at` using `state.lease_duration_seconds` (fallback 900) and
+   refreshes `sessions/<session-id>.json.last_seen_at`.
 7. Ordinary mutation and automatic heartbeat never change `owner_session`.
 8. `renew-lease` only extends the current owner's lease.  It cannot bind an
    unowned task and cannot change ownership.
@@ -169,9 +175,15 @@ Ownership and mutation rules:
    explicit `--force-takeover`.
 10. Takeover writes `TASK_TAKEOVER` with `from_session`, `to_session`,
     `lease_expired`, and `forced`.
-11. Explicit `renew-lease` writes `LEASE_RENEWED` and `SESSION_ATTACHED`.
+11. Task takeover transfers task ownership only.  It never marks the previous
+    reliability session expired and never clears that session's unrelated
+    `active_task`.  If the old session's `active_task` equals the taken-over
+    task, only that binding is cleared.
+12. Explicit `renew-lease` writes `LEASE_RENEWED`.
     Ordinary mutation heartbeat is metadata only and does not add
     `LEASE_RENEWED` events, avoiding log noise.
+13. Explicit `renew-lease --lease-seconds` updates
+    `lease_duration_seconds`; later ordinary heartbeats keep that duration.
 
 Renewing a lease does **not** clear dirty state or resolve operations.
 

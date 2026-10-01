@@ -123,12 +123,15 @@ revision. A session may take over an expired lease and must emit a takeover
 event.
 
 Only the current owner may mutate a task while its lease is valid.  Successful
-owner mutations renew the lease automatically.  An unowned task must be bound
-through attach/resume before mutation.
+owner mutations renew the lease automatically using the task's persisted
+`lease_duration_seconds` (default 900).  An unowned task must be bound through
+attach/resume before mutation.
 
 If the user confirms the previous session failed, became unavailable, or
 cannot continue, use explicit force takeover even when its lease is still
-valid.  Reconcile dirty and uncertain external operations before continuing.
+valid.  Task takeover transfers task ownership only; it does not imply that the
+previous reliability session itself is invalid.  Reconcile dirty and uncertain
+external operations before continuing.
 
 Read `references/concurrency.md` for lease, takeover, lock, revision, and
 multi-session rules.  Read `references/recovery.md` for crash recovery.

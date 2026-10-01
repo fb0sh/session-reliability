@@ -17,6 +17,7 @@
   "next_actions": [],
   "owner_session": null,
   "lease_expires_at": null,
+  "lease_duration_seconds": 900,
   "dirty": false,
   "active_operation": null,
   "operations": [],

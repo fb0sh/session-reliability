@@ -116,7 +116,13 @@ def cp_json(workspace: Path, task_id: str, *args: str, session_id: Optional[str]
     return run_json("checkpoint.py", *prefix, *args, check=check)
 
 
-def expire_lease(workspace: Path, task_id: str, *, expired_at: str = "2000-01-01T00:00:00+00:00") -> dict[str, Any]:
+def expire_lease(
+    workspace: Path,
+    task_id: str,
+    *,
+    expired_at: str = "2000-01-01T00:00:00+00:00",
+    touch_session: bool = False,
+) -> dict[str, Any]:
     state = state_of(workspace, task_id)
     owner = state.get("owner_session")
     store = lib.resolve_store(None, workspace=workspace)
@@ -130,6 +136,7 @@ def expire_lease(workspace: Path, task_id: str, *, expired_at: str = "2000-01-01
         mutation,
         session_id=owner,
         renew_lease=False,
+        touch_session=touch_session,
     )
 
 

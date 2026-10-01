@@ -133,8 +133,8 @@ Ordinary task mutations:
 - Are rejected with `lease_conflict` if the caller omits `--session-id`, uses a
   foreign session id, or attempts to mutate an unowned task.
 - Never change `owner_session`.
-- Automatically renew the owner's lease and refresh the session heartbeat on
-  success.
+- Automatically renew the owner's lease using `lease_duration_seconds`
+  (fallback 900) and refresh the session heartbeat on success.
 
 An unowned task must be bound through `attach-session` or `resume` before any
 ordinary mutation.  A foreign session with an expired/missing lease must use
@@ -332,6 +332,12 @@ when the user explicitly says the previous session failed, became unavailable,
 or cannot continue, even if the previous lease is still valid.  It writes
 `TASK_TAKEOVER` with `forced=true` and must be followed by dirty/uncertain
 operation reconciliation.
+
+Task takeover transfers ownership of the task only.  It does not invalidate the
+previous reliability session and does not clear that session's unrelated
+`active_task`.  If the previous session's `active_task` equals the taken-over
+task, only that binding is cleared.  `tasks/<id>/STATE.json` is authoritative
+for ownership; session metadata is convenience binding data.
 
 See `references/cli.md` for exact command syntax.
 

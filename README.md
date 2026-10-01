@@ -134,15 +134,15 @@ CLI 参数优先级高于环境变量。
 
 一个有 owner 的 Task，在 lease 有效期间只接受 owner session 的 mutation。
 
-正常 mutation 会自动续租，因此活跃 Agent 不需要手动维护 heartbeat；每次成功的 owner mutation 也会刷新对应 session 的 `last_seen_at`。
+正常 mutation 会自动按 Task 持久化的 `lease_duration_seconds` 续租（默认 900 秒），因此自定义 `--lease-seconds` 不会在 heartbeat 后跳回默认值。每次成功的 owner mutation 也会刷新对应 session 的 `last_seen_at`。
 
 其他 Session 不能直接修改该 Task，需要等待 lease 过期后 takeover，或通过明确的 attach/resume 流程成为 owner。
 
-如果用户明确确认旧 Session 已崩溃、失效或无法继续，新 Session 可以执行显式 force takeover，即使旧 lease 仍然有效。接管后必须先处理 dirty / `outcome_unknown` 状态，再继续工作。
+如果用户明确确认旧 Session 已崩溃、失效或无法继续，新 Session 可以执行显式 force takeover，即使旧 lease 仍然有效。Task takeover 只转移该 Task 的 ownership，不会把旧 Session 整体标记为 expired，也不会清掉旧 Session 正在绑定的其他 Task。接管后必须先处理 dirty / `outcome_unknown` 状态，再继续工作。
 
 `renew-lease` 只延长当前 owner 的 lease，不会改变 owner。Unowned Task 必须先通过 `attach-session` 或 `resume` 绑定。
 
-如果 Runtime 提供 native session id，`init` 会尽可能复用已有 reliability session；若发现重复 native session id 映射，会安全失败而不是随机选择。
+如果 Runtime 提供 native session id，`init` 会尽可能复用已有 reliability session。`native_session_id` 在存在时保持全局唯一；显式 rebind 或重复映射会安全失败，而不是随机选择或静默覆盖。
 
 ## 测试
 

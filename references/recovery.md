@@ -156,8 +156,12 @@ CLI recovery:
 
 See `references/cli.md` for exact command syntax.
 
-Takeover always appends `TASK_TAKEOVER` and updates the session's
-`active_task`.
+Takeover always appends `TASK_TAKEOVER` and updates the new session's
+`active_task`.  Task takeover transfers ownership of that task only; it does
+not mark the previous reliability session expired.  If the previous session's
+`active_task` pointed at the taken-over task, only that binding is cleared;
+other active task bindings are preserved.  Session metadata cleanup is
+best-effort, while `tasks/<id>/STATE.json` remains authoritative.
 
 ### User-confirmed crash recovery
 

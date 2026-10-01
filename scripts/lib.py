@@ -205,6 +205,18 @@ def lease_expiry_from_now(seconds: int = DEFAULT_LEASE_SECONDS) -> str:
     )
 
 
+def get_lease_duration_seconds(state: dict[str, Any]) -> int:
+    """Return the task's preferred lease duration, with V1 fallback.
+
+    ``lease_duration_seconds`` is optional for older V1 state files.  When it
+    is absent, the default 900-second duration is used.
+    """
+    value = state.get("lease_duration_seconds", DEFAULT_LEASE_SECONDS)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise SchemaError("lease_duration_seconds must be a positive integer")
+    return value
+
+
 def slugify(text: str, max_length: int = 40) -> str:
     text = (text or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
@@ -510,6 +522,10 @@ def validate_state(state: dict[str, Any], *, where: str = "STATE.json") -> None:
     active = state.get("active_operation")
     if active is not None and not isinstance(active, str):
         raise SchemaError(f"{where}.active_operation must be a string or null")
+    if "lease_duration_seconds" in state:
+        duration = state["lease_duration_seconds"]
+        if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
+            raise SchemaError(f"{where}.lease_duration_seconds must be a positive integer")
 
 
 def validate_session(session: dict[str, Any], *, where: str = "session.json") -> None:
@@ -554,6 +570,63 @@ def validate_task_ownership(
         )
 
 
+def apply_task_ownership_transfer(
+    state: dict[str, Any],
+    *,
+    task_id: str,
+    session_id: str,
+    force: bool,
+    lease_duration_seconds: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Apply attach/renew/takeover ownership semantics in memory.
+
+    Must be called while holding the task lock.  The caller is responsible for
+    persisting the mutated task state and for best-effort session metadata
+    cleanup after the task write.
+    """
+    if not isinstance(lease_duration_seconds, int) or isinstance(lease_duration_seconds, bool) or lease_duration_seconds <= 0:
+        raise ValidationError("lease_duration_seconds must be a positive integer")
+
+    owner = state.get("owner_session")
+    lease_valid = lease_is_valid(state.get("lease_expires_at"))
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    if owner is None:
+        events.append(("TASK_ATTACHED", {"session_id": session_id}))
+    elif owner == session_id:
+        events.append(
+            ("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": lease_duration_seconds})
+        )
+    else:
+        if lease_valid and not force:
+            raise LeaseConflict(
+                f"task {task_id} is leased to session {owner} until {state.get('lease_expires_at')}",
+                details={
+                    "reason": "lease_valid",
+                    "owner_session": owner,
+                    "lease_expires_at": state.get("lease_expires_at"),
+                    "session_id": session_id,
+                },
+            )
+        events.append(
+            (
+                "TASK_TAKEOVER",
+                {
+                    "from_session": owner,
+                    "to_session": session_id,
+                    "lease_expired": not lease_valid,
+                    "forced": bool(force and lease_valid),
+                },
+            )
+        )
+
+    state["owner_session"] = session_id
+    state["lease_duration_seconds"] = lease_duration_seconds
+    state["lease_expires_at"] = lease_expiry_from_now(lease_duration_seconds)
+    events.append(("SESSION_ATTACHED", {"session_id": session_id}))
+    return events
+
+
 def default_state(
     *,
     task_id: str,
@@ -562,6 +635,7 @@ def default_state(
     status: str = "pending",
     owner_session: Optional[str] = None,
     lease_expires_at: Optional[str] = None,
+    lease_duration_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> dict[str, Any]:
     ts = now_iso()
     state: dict[str, Any] = {
@@ -576,6 +650,7 @@ def default_state(
         "next_actions": [],
         "owner_session": owner_session,
         "lease_expires_at": lease_expires_at,
+        "lease_duration_seconds": lease_duration_seconds,
         "dirty": False,
         "active_operation": None,
         "operations": [],
@@ -1003,6 +1078,8 @@ def rebuild_index_unlocked(store: Path) -> dict[str, Any]:
             try:
                 state = load_task_state(store, child.name, validate=True)
                 index["tasks"][child.name] = _task_index_entry(state)
+            except FutureSchemaError:
+                raise
             except SRError as exc:
                 index["tasks"][child.name] = {
                     "title": child.name,
@@ -1019,6 +1096,8 @@ def rebuild_index_unlocked(store: Path) -> dict[str, Any]:
                 if session.get("session_id") != child.stem:
                     raise SchemaError(f"session_id mismatch in {child}")
                 index["sessions"][child.stem] = _session_index_entry(session)
+            except FutureSchemaError:
+                raise
             except SRError as exc:
                 index["sessions"][child.stem] = {
                     "status": "corrupt",
@@ -1112,11 +1191,42 @@ def find_session_by_native_id(store: Path, native_session_id: str) -> list[dict[
             validate_session(session, where=str(child))
             if session.get("session_id") != child.stem:
                 raise SchemaError(f"session_id mismatch in {child}")
+        except FutureSchemaError:
+            # A future-schema session must stop lookup.  Ignoring it could
+            # create a duplicate reliability session with the same native id.
+            raise
         except SRError:
             continue
         if session.get("native_session_id") == native_session_id:
             matches.append(session)
     return matches
+
+
+def assert_native_session_id_available(
+    store: Path,
+    native_session_id: str,
+    *,
+    current_session_id: Optional[str] = None,
+) -> None:
+    """Enforce one native_session_id -> one reliability session.
+
+    A null binding may be set to X, an existing X may be refreshed by the same
+    session, but X may not be silently rebound to Y and one native id may not
+    map to multiple reliability sessions.
+    """
+    matches = find_session_by_native_id(store, native_session_id)
+    if not matches:
+        return
+    if len(matches) == 1 and matches[0].get("session_id") == current_session_id:
+        return
+    raise SessionIdentityConflict(
+        f"native_session_id {native_session_id!r} is already bound to another reliability session",
+        details={
+            "native_session_id": native_session_id,
+            "current_session_id": current_session_id,
+            "existing_session_ids": [match.get("session_id") for match in matches],
+        },
+    )
 
 
 def create_or_touch_session(
@@ -1148,6 +1258,17 @@ def create_or_touch_session(
 
     sid = session_id or generate_session_id()
     validate_id_component(sid, field="session_id")
+
+    # Enforce uniqueness before any read, corruption recovery, or write.  This
+    # also prevents explicit session-id calls from silently rebinding native-X
+    # to another reliability session.
+    if native_session_id is not None:
+        assert_native_session_id_available(
+            store,
+            native_session_id,
+            current_session_id=sid,
+        )
+
     path = session_path(store, sid)
     created = False
     with ProcessLock(session_lock_path(store, sid)):
@@ -1158,10 +1279,25 @@ def create_or_touch_session(
                 if session.get("session_id") != sid:
                     raise SchemaError(f"session_id mismatch in {path}")
                 if native_session_id is not None:
+                    existing_native = session.get("native_session_id")
+                    if existing_native not in (None, native_session_id):
+                        raise SessionIdentityConflict(
+                            f"session {sid} already has native_session_id {existing_native!r}; "
+                            f"refusing to rebind it to {native_session_id!r}",
+                            details={
+                                "session_id": sid,
+                                "existing_native_session_id": existing_native,
+                                "requested_native_session_id": native_session_id,
+                            },
+                        )
                     session["native_session_id"] = native_session_id
                 session["last_seen_at"] = now_iso()
                 if session.get("status") in {"expired", "closed"}:
                     session["status"] = "active"
+            except FutureSchemaError:
+                raise
+            except SessionIdentityConflict:
+                raise
             except SRError:
                 # Session metadata is a transient runtime file.  Preserve the old
                 # file and replace it with a fresh valid session record.
@@ -1206,8 +1342,41 @@ def set_session_active_task(store: Path, session_id: str, task_id: Optional[str]
     return session
 
 
+def clear_session_task_binding_if_matches(
+    store: Path,
+    session_id: str,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    """Clear session.active_task only when it currently points at task_id.
+
+    This is task-binding cleanup, not session invalidation.  Session status and
+    last_seen_at are intentionally left unchanged.  Future-schema session files
+    are never modified; FutureSchemaError propagates to the caller.
+    """
+    validate_id_component(session_id, field="session_id")
+    validate_id_component(task_id, field="task_id")
+    path = session_path(store, session_id)
+    if not path.exists():
+        return None
+    with ProcessLock(session_lock_path(store, session_id)):
+        session = load_json(path)
+        validate_session(session, where=str(path))
+        if session.get("session_id") != session_id:
+            raise SchemaError(f"session_id mismatch in {path}")
+        if session.get("active_task") != task_id:
+            return session
+        session["active_task"] = None
+        atomic_write_json(path, session)
+    update_index_session(store, session_id, session)
+    return session
+
+
 def retire_session(store: Path, session_id: str) -> None:
-    """Best-effort retirement of a session that lost a takeover lease."""
+    """Explicitly invalidate an entire reliability session.
+
+    This is not called by ordinary task takeover.  Task ownership transfer only
+    unbinds the specific task and never marks the previous session expired.
+    """
     validate_id_component(session_id, field="session_id")
     path = session_path(store, session_id)
     if not path.exists():
@@ -1249,6 +1418,8 @@ def create_task(
         raise ValidationError("title is required")
     if not objective:
         raise ValidationError("objective is required")
+    if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) or lease_seconds <= 0:
+        raise ValidationError("lease_seconds must be a positive integer")
 
     base_id = task_id or generate_task_id(title)
     validate_id_component(base_id, field="task_id")
@@ -1274,6 +1445,7 @@ def create_task(
                 status="pending" if not session_id else "in_progress",
                 owner_session=owner,
                 lease_expires_at=lease,
+                lease_duration_seconds=lease_seconds,
             )
             state["requirements"] = [str(x).strip() for x in requirements if str(x).strip()]
             state["constraints"] = [str(x).strip() for x in constraints if str(x).strip()]
@@ -1317,7 +1489,8 @@ def mutate_task(
     enforce_lease: bool = True,
     renew_lease: bool = True,
     touch_session: bool = True,
-    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    takeover_cleanup: bool = False,
+    lease_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
     """Apply an in-place state mutation under the per-task lock.
 
@@ -1355,7 +1528,9 @@ def mutate_task(
             all_events.extend(returned_events)
 
         if renew_lease and enforce_lease and session_id and state.get("owner_session") == session_id:
-            state["lease_expires_at"] = lease_expiry_from_now(lease_seconds)
+            duration = lease_seconds if lease_seconds is not None else get_lease_duration_seconds(state)
+            state["lease_duration_seconds"] = duration
+            state["lease_expires_at"] = lease_expiry_from_now(duration)
 
         validate_state(state, where=str(path / STATE_FILENAME))
         state["revision"] = before + 1
@@ -1365,8 +1540,15 @@ def mutate_task(
             append_event(path, event_type, task_id=task_id, **fields)
         write_checkpoint(store, task_id, state)
         update_index_task(store, task_id, state)
+        # Session metadata is convenience data.  Task STATE.json is already
+        # authoritative, so metadata updates below are best-effort and never
+        # roll back the task write.
         if touch_session and session_id:
-            set_session_active_task(store, session_id, task_id)
+            with contextlib.suppress(SRError, OSError):
+                set_session_active_task(store, session_id, task_id)
+        if takeover_cleanup and owner_before and owner_before != session_id:
+            with contextlib.suppress(SRError, OSError):
+                clear_session_task_binding_if_matches(store, owner_before, task_id)
         return state
 
 
@@ -1406,6 +1588,8 @@ def list_tasks(
                 continue
             try:
                 state = load_task_state(store, child.name, validate=True)
+            except FutureSchemaError:
+                raise
             except SRError as exc:
                 if not wanted or unfinished_only or "corrupt" in wanted:
                     tasks.append(
@@ -1560,10 +1744,11 @@ def resume_task(
     *,
     force_takeover: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Resume a task under its lock.
+    """Resume or take over a task under its lock.
 
-    Applies lease rules, conservatively marks stale running operations as
-    outcome_unknown, renews the lease, and binds the session.
+    Attach, expired-lease takeover, and force takeover all use the same
+    ownership-transfer helper.  A task takeover only transfers this task; it
+    never marks the previous reliability session expired.
     """
     store = Path(store)
     ensure_store(store)
@@ -1571,64 +1756,32 @@ def resume_task(
     if not path.is_dir():
         raise TaskNotFound(f"task not found: {task_id}")
 
-    with ProcessLock(task_lock_path(store, task_id)):
-        state = load_task_state(store, task_id)
-        owner = state.get("owner_session")
-        previous_owner = owner
-        lease_valid = lease_is_valid(state.get("lease_expires_at"))
-        events: list[tuple[str, dict[str, Any]]] = []
-        warnings: list[str] = []
+    warnings: list[str] = []
 
-        if owner and owner != session_id:
-            if lease_valid and not force_takeover:
-                raise LeaseConflict(
-                    f"task {task_id} is leased to session {owner} until {state.get('lease_expires_at')}",
-                    details={
-                        "owner_session": owner,
-                        "lease_expires_at": state.get("lease_expires_at"),
-                        "session_id": session_id,
-                    },
-                )
-            events.append(
-                (
-                    "TASK_TAKEOVER",
-                    {
-                        "from_session": owner,
-                        "to_session": session_id,
-                        "lease_expired": not lease_valid,
-                        "forced": bool(force_takeover and lease_valid),
-                    },
-                )
-            )
-            state["owner_session"] = session_id
-        elif not owner:
-            state["owner_session"] = session_id
-            events.append(("TASK_ATTACHED", {"session_id": session_id}))
-        else:
-            events.append(("LEASE_RENEWED", {"session_id": session_id}))
-        events.append(("SESSION_ATTACHED", {"session_id": session_id}))
-
+    def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        lease_duration = get_lease_duration_seconds(state)
+        events = apply_task_ownership_transfer(
+            state,
+            task_id=task_id,
+            session_id=session_id,
+            force=force_takeover,
+            lease_duration_seconds=lease_duration,
+        )
         dirty_events, dirty_warnings = _reconcile_dirty_and_operations(state)
-        events.extend(dirty_events)
         warnings.extend(dirty_warnings)
+        return events + dirty_events
 
-        state["owner_session"] = session_id
-        state["lease_expires_at"] = lease_expiry_from_now()
-        state["updated_at"] = now_iso()
-        before = state.get("revision", 1)
-        state["revision"] = before + 1
-        validate_state(state, where=str(path / STATE_FILENAME))
-        atomic_write_json(path / STATE_FILENAME, state)
-        for event_type, fields in events:
-            append_event(path, event_type, task_id=task_id, **fields)
-        # Re-render checkpoint so a fresh agent sees the latest conservative facts.
-        write_checkpoint(store, task_id, state)
-        update_index_task(store, task_id, state)
-        set_session_active_task(store, session_id, task_id)
-        if previous_owner and previous_owner != session_id:
-            with contextlib.suppress(SRError):
-                retire_session(store, previous_owner)
-        return state, warnings
+    state = mutate_task(
+        store,
+        task_id,
+        mutation,
+        session_id=session_id,
+        enforce_lease=False,
+        renew_lease=False,
+        touch_session=True,
+        takeover_cleanup=True,
+    )
+    return state, warnings
 
 
 # ---------------------------------------------------------------------------

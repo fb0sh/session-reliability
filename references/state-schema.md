@@ -210,6 +210,7 @@ the damaged `STATE.json` is never overwritten by that marker.
   ],
   "owner_session": "sr-20260930-223501-a7f3",
   "lease_expires_at": "2026-09-30T22:55:00+00:00",
+  "lease_duration_seconds": 900,
   "dirty": false,
   "active_operation": null,
   "operations": [],
@@ -264,6 +265,7 @@ Required fields:
 | `next_actions` | array of strings | immediate next actions |
 | `owner_session` | string or null | only this session may run ordinary task mutations |
 | `lease_expires_at` | ISO timestamp or null | lease expiry; auto-renewed on successful owner mutation |
+| `lease_duration_seconds` | positive integer | optional for older V1 state; default 900; preferred duration used by heartbeat renewal |
 | `dirty` | boolean | unresolved side effect/recovery flag |
 | `active_operation` | string or null | operation id |
 | `operations` | array | operation objects |
@@ -277,6 +279,11 @@ Required fields:
 Implementation also stores `requirements`, `constraints`, and
 `success_criteria` mirrors for checkpoint rendering.  `TASK.md` remains the
 human-facing durable definition.
+
+`STATE.json.owner_session` is authoritative for task ownership.  A session's
+`active_task` is convenience binding metadata; if they disagree, trust the task
+state and repair/ignore the session binding accordingly.  Task takeover only
+updates the relevant task binding and never marks a whole session expired.
 
 Allowed task statuses:
 

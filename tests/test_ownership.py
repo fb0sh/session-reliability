@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
@@ -85,9 +86,10 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session = helpers.init_session(workspace)
             task_id = "task-20261001-000003-heartbeat"
-            helpers.create_task(workspace, task_id, session_id=session["session_id"], lease_seconds=1)
+            helpers.create_task(workspace, task_id, session_id=session["session_id"], lease_seconds=30)
             before = helpers.state_of(workspace, task_id)
             self.assertEqual(before["owner_session"], session["session_id"])
+            self.assertEqual(before["lease_duration_seconds"], 30)
 
             # Force an observable old heartbeat timestamp without adding test sleep.
             session_path = Path(session["session_file"])
@@ -104,11 +106,12 @@ class OwnershipTests(unittest.TestCase):
             )
             after = helpers.state_of(workspace, task_id)
             self.assertGreater(after["revision"], before["revision"])
-            self.assertGreater(
-                lib.parse_iso(after["lease_expires_at"]),
-                lib.parse_iso(before["lease_expires_at"]),
-                "owner mutation should renew the lease",
-            )
+            self.assertEqual(after["lease_duration_seconds"], 30)
+            renewed_seconds = (
+                lib.parse_iso(after["lease_expires_at"]) - lib.parse_iso(after["updated_at"])
+            ).total_seconds()
+            self.assertGreaterEqual(renewed_seconds, 20)
+            self.assertLessEqual(renewed_seconds, 35)
             refreshed_session = json.loads(session_path.read_text(encoding="utf-8"))
             self.assertGreater(
                 lib.parse_iso(refreshed_session["last_seen_at"]),
@@ -297,6 +300,163 @@ class OwnershipTests(unittest.TestCase):
             unowned = run_checkpoint(workspace, task_id, session_b["session_id"], "set-next-actions", "--action", "blocked")
             self.assertEqual(unowned.returncode, lib.LeaseConflict.code)
 
+    def test_takeover_preserves_unrelated_old_session_active_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session_a = helpers.init_session(workspace)
+            task_x = "task-20261001-000020-isolation-x"
+            task_y = "task-20261001-000021-isolation-y"
+            helpers.create_task(workspace, task_x, session_id=session_a["session_id"])
+            helpers.create_task(workspace, task_y, session_id=session_a["session_id"])
+            self.assertEqual(
+                json.loads(Path(session_a["session_file"]).read_text(encoding="utf-8"))["active_task"],
+                task_y,
+            )
+            helpers.expire_lease(workspace, task_x, touch_session=False)
+            session_b = helpers.init_session(workspace)
+
+            helpers.run_json(
+                "resume.py",
+                "--workspace", str(workspace),
+                "--session-id", session_b["session_id"],
+                "--task", task_x,
+            )
+
+            self.assertEqual(helpers.state_of(workspace, task_x)["owner_session"], session_b["session_id"])
+            session_a_after = json.loads(Path(session_a["session_file"]).read_text(encoding="utf-8"))
+            session_b_after = json.loads(Path(session_b["session_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(session_a_after["status"], "active")
+            self.assertEqual(session_a_after["active_task"], task_y)
+            self.assertEqual(session_b_after["active_task"], task_x)
+
+    def test_takeover_unbinds_matching_old_active_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session_a = helpers.init_session(workspace)
+            task_id = "task-20261001-000022-unbind"
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"])
+            self.assertEqual(
+                json.loads(Path(session_a["session_file"]).read_text(encoding="utf-8"))["active_task"],
+                task_id,
+            )
+            helpers.expire_lease(workspace, task_id, touch_session=False)
+            session_b = helpers.init_session(workspace)
+
+            helpers.run_json(
+                "resume.py",
+                "--workspace", str(workspace),
+                "--session-id", session_b["session_id"],
+                "--task", task_id,
+            )
+
+            session_a_after = json.loads(Path(session_a["session_file"]).read_text(encoding="utf-8"))
+            session_b_after = json.loads(Path(session_b["session_file"]).read_text(encoding="utf-8"))
+            self.assertIsNone(session_a_after["active_task"])
+            self.assertEqual(session_a_after["status"], "active")
+            self.assertEqual(session_b_after["active_task"], task_id)
+
+    def test_resume_and_attach_takeover_are_consistent(self) -> None:
+        def scenario(use_attach: bool) -> dict[str, Any]:
+            tmp = tempfile.TemporaryDirectory()
+            workspace = Path(tmp.name)
+            session_a = helpers.init_session(workspace)
+            task_id = "task-20261001-000023-consistency"
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.expire_lease(workspace, task_id, touch_session=False)
+            session_b = helpers.init_session(workspace)
+
+            if use_attach:
+                result = run_checkpoint(workspace, task_id, session_b["session_id"], "attach-session")
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                helpers.run_json(
+                    "resume.py",
+                    "--workspace", str(workspace),
+                    "--session-id", session_b["session_id"],
+                    "--task", task_id,
+                )
+
+            state = helpers.state_of(workspace, task_id)
+            session_a_after = json.loads(Path(session_a["session_file"]).read_text(encoding="utf-8"))
+            session_b_after = json.loads(Path(session_b["session_file"]).read_text(encoding="utf-8"))
+            takeover = [event for event in helpers.events_of(workspace, task_id) if event["type"] == "TASK_TAKEOVER"][-1]
+            result = {
+                "owner_is_new": state["owner_session"] == session_b["session_id"],
+                "lease_duration_seconds": state["lease_duration_seconds"],
+                "old_active_task": session_a_after["active_task"],
+                "old_status": session_a_after["status"],
+                "new_active_task": session_b_after["active_task"],
+                "from_is_old": takeover["from_session"] == session_a["session_id"],
+                "to_is_new": takeover["to_session"] == session_b["session_id"],
+                "lease_expired": takeover["lease_expired"],
+                "forced": takeover["forced"],
+            }
+            tmp.cleanup()
+            return result
+
+        resume_result = scenario(use_attach=False)
+        attach_result = scenario(use_attach=True)
+        self.assertEqual(resume_result, attach_result)
+
+    def test_native_rebind_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            first = helpers.init_session(
+                workspace,
+                session_id="sr-20261001-000024-rebind",
+                native_session_id="runtime-X",
+            )
+            result = helpers.run_script(
+                "init.py",
+                "--workspace", str(workspace),
+                "--session-id", first["session_id"],
+                "--native-session-id", "runtime-Y",
+                check=False,
+            )
+            self.assertEqual(result.returncode, lib.SessionIdentityConflict.code)
+            session = json.loads(Path(first["session_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(session["native_session_id"], "runtime-X")
+
+    def test_null_native_binding_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            first = helpers.init_session(workspace, session_id="sr-20261001-000025-null")
+            second = helpers.init_session(
+                workspace,
+                session_id=first["session_id"],
+                native_session_id="runtime-X",
+            )
+            self.assertEqual(second["session_id"], first["session_id"])
+            session = json.loads(Path(second["session_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(session["native_session_id"], "runtime-X")
+
+    def test_renew_lease_changes_heartbeat_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session = helpers.init_session(workspace)
+            task_id = "task-20261001-000026-renew-duration"
+            helpers.create_task(workspace, task_id, session_id=session["session_id"], lease_seconds=900)
+
+            helpers.cp_json(
+                workspace,
+                task_id,
+                "renew-lease", "--lease-seconds", "45",
+                session_id=session["session_id"],
+            )
+            helpers.cp_json(
+                workspace,
+                task_id,
+                "add-step", "--title", "After renew",
+                session_id=session["session_id"],
+            )
+            state = helpers.state_of(workspace, task_id)
+            self.assertEqual(state["lease_duration_seconds"], 45)
+            renewed_seconds = (
+                lib.parse_iso(state["lease_expires_at"]) - lib.parse_iso(state["updated_at"])
+            ).total_seconds()
+            self.assertGreaterEqual(renewed_seconds, 40)
+            self.assertLessEqual(renewed_seconds, 50)
+
     def test_native_session_id_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -310,8 +470,25 @@ class OwnershipTests(unittest.TestCase):
     def test_duplicate_native_session_id_fails_safely(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            helpers.init_session(workspace, session_id="sr-20261001-000010-aaaa", native_session_id="runtime-X")
-            helpers.init_session(workspace, session_id="sr-20261001-000011-bbbb", native_session_id="runtime-X")
+            first = helpers.init_session(
+                workspace,
+                session_id="sr-20261001-000010-aaaa",
+                native_session_id="runtime-X",
+            )
+            # Simulate a pre-existing metadata conflict without using init,
+            # because init now correctly refuses to create the duplicate.
+            second = {
+                "schema_version": 1,
+                "session_id": "sr-20261001-000011-bbbb",
+                "native_session_id": "runtime-X",
+                "status": "active",
+                "active_task": None,
+                "started_at": "2026-10-01T00:00:00+00:00",
+                "last_seen_at": "2026-10-01T00:00:00+00:00",
+            }
+            session_path = helpers.store_dir(workspace) / "sessions" / "sr-20261001-000011-bbbb.json"
+            session_path.write_text(json.dumps(second, indent=2) + "\n", encoding="utf-8")
+
             result = helpers.run_script(
                 "init.py",
                 "--workspace", str(workspace),
@@ -321,6 +498,8 @@ class OwnershipTests(unittest.TestCase):
             self.assertEqual(result.returncode, lib.SessionIdentityConflict.code)
             self.assertIn("session_identity_conflict", result.stderr)
             self.assertEqual(len(helpers.sessions(workspace)), 2)
+            unchanged = json.loads(Path(first["session_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(unchanged["native_session_id"], "runtime-X")
 
     def test_multiple_sessions_independent_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
