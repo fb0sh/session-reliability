@@ -35,7 +35,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000001-owner"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             helpers.cp_json(
                 workspace,
                 task_id,
@@ -125,7 +125,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000004-renew"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             session_b = helpers.init_session(workspace)
 
             result = run_checkpoint(
@@ -143,7 +143,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000005-expired"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             session_b = helpers.init_session(workspace)
             helpers.expire_lease(workspace, task_id)
 
@@ -168,7 +168,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000006-blocked-resume"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             session_b = helpers.init_session(workspace)
 
             result = helpers.run_script(
@@ -187,7 +187,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000007-force"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             helpers.cp_json(workspace, task_id, "add-step", "--title", "Side effect", session_id=session_a["session_id"])
             helpers.cp_json(workspace, task_id, "start-step", "--step", "step-1", session_id=session_a["session_id"])
             helpers.cp_json(
@@ -275,7 +275,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000009-attach-detach"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             session_b = helpers.init_session(workspace)
 
             blocked = run_checkpoint(workspace, task_id, session_b["session_id"], "attach-session")
@@ -361,7 +361,7 @@ class OwnershipTests(unittest.TestCase):
             workspace = Path(tmp.name)
             session_a = helpers.init_session(workspace)
             task_id = "task-20261001-000023-consistency"
-            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=900)
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=37)
             helpers.expire_lease(workspace, task_id, touch_session=False)
             session_b = helpers.init_session(workspace)
 
@@ -397,6 +397,7 @@ class OwnershipTests(unittest.TestCase):
         resume_result = scenario(use_attach=False)
         attach_result = scenario(use_attach=True)
         self.assertEqual(resume_result, attach_result)
+        self.assertEqual(resume_result["lease_duration_seconds"], 37)
 
     def test_native_rebind_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,6 +430,66 @@ class OwnershipTests(unittest.TestCase):
             self.assertEqual(second["session_id"], first["session_id"])
             session = json.loads(Path(second["session_file"]).read_text(encoding="utf-8"))
             self.assertEqual(session["native_session_id"], "runtime-X")
+
+    def test_attach_without_lease_seconds_preserves_custom_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session_a = helpers.init_session(workspace)
+            task_id = "task-20261001-000027-attach-preserve"
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=30)
+            helpers.expire_lease(workspace, task_id, touch_session=False)
+            session_b = helpers.init_session(workspace)
+
+            result = run_checkpoint(workspace, task_id, session_b["session_id"], "attach-session")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = helpers.state_of(workspace, task_id)
+            self.assertEqual(state["owner_session"], session_b["session_id"])
+            self.assertEqual(state["lease_duration_seconds"], 30)
+            renewed_seconds = (
+                lib.parse_iso(state["lease_expires_at"]) - lib.parse_iso(state["updated_at"])
+            ).total_seconds()
+            self.assertGreaterEqual(renewed_seconds, 25)
+            self.assertLessEqual(renewed_seconds, 35)
+
+    def test_renew_without_lease_seconds_preserves_custom_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session = helpers.init_session(workspace)
+            task_id = "task-20261001-000028-renew-preserve"
+            helpers.create_task(workspace, task_id, session_id=session["session_id"], lease_seconds=45)
+
+            helpers.cp_json(workspace, task_id, "renew-lease", session_id=session["session_id"])
+            state = helpers.state_of(workspace, task_id)
+            self.assertEqual(state["lease_duration_seconds"], 45)
+            renewed_seconds = (
+                lib.parse_iso(state["lease_expires_at"]) - lib.parse_iso(state["updated_at"])
+            ).total_seconds()
+            self.assertGreaterEqual(renewed_seconds, 40)
+            self.assertLessEqual(renewed_seconds, 50)
+
+    def test_attach_explicit_lease_override_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session_a = helpers.init_session(workspace)
+            task_id = "task-20261001-000029-attach-override"
+            helpers.create_task(workspace, task_id, session_id=session_a["session_id"], lease_seconds=30)
+            helpers.expire_lease(workspace, task_id, touch_session=False)
+            session_b = helpers.init_session(workspace)
+
+            result = run_checkpoint(
+                workspace,
+                task_id,
+                session_b["session_id"],
+                "attach-session", "--lease-seconds", "75",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = helpers.state_of(workspace, task_id)
+            self.assertEqual(state["lease_duration_seconds"], 75)
+            renewed_seconds = (
+                lib.parse_iso(state["lease_expires_at"]) - lib.parse_iso(state["updated_at"])
+            ).total_seconds()
+            self.assertGreaterEqual(renewed_seconds, 70)
+            self.assertLessEqual(renewed_seconds, 80)
 
     def test_renew_lease_changes_heartbeat_duration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

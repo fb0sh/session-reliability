@@ -36,6 +36,7 @@ Locks are advisory, cross-process, and short-lived.
 | Per-task mutation | `tasks/<task-id>/.lock` | all `STATE.json` / step / operation mutations |
 | Index mutation | `<store>/index.lock` | `index.json` writes |
 | Session file | `sessions/<session-id>.lock` | session file writes |
+| Session identity | `<store>/sessions.identity.lock` | native_session_id scan + bind/create/reuse |
 
 Implementation:
 
@@ -43,6 +44,23 @@ Implementation:
 Unix/macOS: fcntl.flock(fd, LOCK_EX | LOCK_NB) with bounded retry
 Windows: O_CREAT|O_EXCL lock-file fallback with bounded retry
 ```
+
+Lock ordering is fixed:
+
+```text
+session identity lock
+    -> individual session lock
+    -> release individual session lock
+    -> index lock
+```
+
+No code path takes an individual session lock and then the identity lock.
+Task locks are independent of identity locks; task mutations never hold the
+identity lock and native identity operations never hold a task lock.
+
+Identity lock scope is intentionally narrow: it covers native_session_id
+uniqueness checks and session binding writes only.  It must not cover task
+mutations, external side effects, long operations, or user interaction.
 
 Rules:
 
@@ -326,6 +344,29 @@ persisted file.
 - updated under `index.lock`
 - must not be used to decide authoritative task status
 
+Index read rules:
+
+```text
+missing
+-> rebuild
+
+invalid JSON
+-> rebuild
+
+valid JSON but invalid current-version schema/shape
+-> rebuild
+
+schema_version > supported
+-> FutureSchemaError
+-> preserve file
+-> do not rebuild/overwrite
+```
+
+Current-version corruption includes missing `schema_version`, non-integer
+`schema_version`, or invalid `tasks` / `sessions` shapes.  These are disposable
+cache corruption and are rebuilt from authoritative task/session files.
+Future-version index files are never downgraded or overwritten.
+
 If index entries and `STATE.json` disagree, trust `STATE.json` and rebuild the
 index.
 
@@ -339,6 +380,10 @@ index.
 - Multiple sessions cannot safely execute the same side-effect operation
   concurrently; the lease and unresolved-operation rules are the guard.
 - Event log is not an automatic rebuild engine.
+- `TASK.md` and `STATE.json` are separate atomic files and do not form a
+  filesystem-wide transaction.  `STATE.json` remains authoritative for machine
+  state.  A crash during a multi-file update may require reconciliation.  V1.1:
+  improve multi-file reconciliation/journaling.
 
 ## 11. Operational checklist
 

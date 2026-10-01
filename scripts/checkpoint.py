@@ -319,6 +319,7 @@ def cmd_update_requirements(args: argparse.Namespace) -> int:
     task_id = _require_task(args)
 
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        # V1.1: improve multi-file reconciliation/journaling for TASK.md + STATE.json.
         md_path = lib.task_markdown_path(store, task_id)
         text = md_path.read_text(encoding="utf-8")
         counts: dict[str, int] = {"requirements": 0, "constraints": 0, "success_criteria": 0}
@@ -458,16 +459,24 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
 
 def cmd_renew_lease(args: argparse.Namespace) -> int:
     session_id = _require_session(args)
-    if not isinstance(args.lease_seconds, int) or isinstance(args.lease_seconds, bool) or args.lease_seconds <= 0:
+    if args.lease_seconds is not None and (
+        not isinstance(args.lease_seconds, int)
+        or isinstance(args.lease_seconds, bool)
+        or args.lease_seconds <= 0
+    ):
         raise lib.ValidationError("--lease-seconds must be a positive integer")
 
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         # mutate_task enforces that the caller is the current owner.  This
-        # command extends the lease and updates the preferred heartbeat
-        # duration; it must never change owner_session.
-        state["lease_duration_seconds"] = args.lease_seconds
-        state["lease_expires_at"] = lib.lease_expiry_from_now(args.lease_seconds)
-        return [("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": args.lease_seconds})]
+        # command extends the lease; it must never change owner_session.
+        duration = (
+            args.lease_seconds
+            if args.lease_seconds is not None
+            else lib.get_lease_duration_seconds(state)
+        )
+        state["lease_duration_seconds"] = duration
+        state["lease_expires_at"] = lib.lease_expiry_from_now(duration)
+        return [("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": duration})]
 
     _emit_state(
         _mutate(args, mutation, renew_lease=False, touch_session=True),
@@ -675,11 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_checkpoint)
 
     p = sub.add_parser("renew-lease", parents=[common], help="renew the task lease for a session")
-    p.add_argument("--lease-seconds", type=int, default=lib.DEFAULT_LEASE_SECONDS)
+    p.add_argument("--lease-seconds", type=int, default=None)
     p.set_defaults(func=cmd_renew_lease)
 
     p = sub.add_parser("attach-session", parents=[common], help="attach a session to a task")
-    p.add_argument("--lease-seconds", type=int, default=lib.DEFAULT_LEASE_SECONDS)
+    p.add_argument("--lease-seconds", type=int, default=None)
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_attach_session)
 

@@ -4,8 +4,10 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
@@ -81,6 +83,97 @@ class ConcurrencyTests(unittest.TestCase):
             self.assertEqual(taken["owner_session"], session_b["session_id"])
             event_types = [event["type"] for event in helpers.events_of(workspace, task_id)]
             self.assertIn("TASK_TAKEOVER", event_types)
+
+    def test_concurrent_same_native_session_id_is_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            store = lib.resolve_store(None, workspace=workspace)
+            lib.ensure_store(store)
+            tests_dir = Path(__file__).resolve().parent
+            worker_script = tests_dir / "race_init_worker.py"
+            init_script = SCRIPTS / "init.py"
+            workers = 4
+            rounds = 20
+
+            for round_index in range(rounds):
+                native_id = f"runtime-race-{round_index}"
+                gate_dir = Path(tmp) / f"gate-{round_index}"
+                gate_dir.mkdir()
+                go_file = gate_dir / "go"
+                ready_files = [gate_dir / f"ready-{index}" for index in range(workers)]
+                processes = [
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(worker_script),
+                            str(ready_files[index]),
+                            str(go_file),
+                            str(init_script),
+                            "--workspace", str(workspace),
+                            "--native-session-id", native_id,
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    for index in range(workers)
+                ]
+
+                deadline = time.monotonic() + 20
+                while not all(path.exists() for path in ready_files):
+                    if time.monotonic() > deadline:
+                        self.fail("native identity race workers did not reach the gate")
+                    time.sleep(0.001)
+                go_file.write_text("go", encoding="utf-8")
+
+                outputs: list[dict[str, Any]] = []
+                for process in processes:
+                    stdout, stderr = process.communicate(timeout=30)
+                    self.assertEqual(process.returncode, 0, stderr)
+                    outputs.append(json.loads(stdout))
+
+                session_ids = {output["session_id"] for output in outputs}
+                self.assertEqual(len(session_ids), 1, f"duplicate native sessions: {session_ids}")
+                matches = [
+                    session
+                    for session in helpers.sessions(workspace)
+                    if session.get("native_session_id") == native_id
+                ]
+                self.assertEqual(len(matches), 1, f"native id {native_id!r} mapped more than once")
+
+
+    def test_concurrent_explicit_native_binding_has_one_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            lib.ensure_store(lib.resolve_store(None, workspace=workspace))
+            for round_index in range(5):
+                native_id = f"runtime-explicit-{round_index}"
+                commands = [
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "init.py"),
+                        "--workspace", str(workspace),
+                        "--session-id", f"sr-race-{round_index}-a",
+                        "--native-session-id", native_id,
+                    ],
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "init.py"),
+                        "--workspace", str(workspace),
+                        "--session-id", f"sr-race-{round_index}-b",
+                        "--native-session-id", native_id,
+                    ],
+                ]
+                processes = [subprocess.Popen(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for cmd in commands]
+                results = [process.communicate(timeout=20) for process in processes]
+                return_codes = sorted(process.returncode for process in processes)
+                self.assertEqual(return_codes, [0, lib.SessionIdentityConflict.code])
+                matches = [
+                    session
+                    for session in helpers.sessions(workspace)
+                    if session.get("native_session_id") == native_id
+                ]
+                self.assertEqual(len(matches), 1, f"explicit native id {native_id!r} mapped more than once")
 
     def test_process_lock_serializes_concurrent_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

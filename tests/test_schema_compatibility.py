@@ -106,6 +106,30 @@ class SchemaCompatibilityTests(unittest.TestCase):
             self.assertEqual(result.returncode, lib.FutureSchemaError.code)
             self.assertEqual(state_path.read_bytes(), original)
 
+    def test_current_version_corrupt_indexes_are_rebuilt(self) -> None:
+        cases = {
+            "missing_schema_version": {"tasks": {}, "sessions": {}},
+            "bad_schema_version_type": {"schema_version": "one", "tasks": {}, "sessions": {}},
+            "invalid_tasks_sessions_shape": {"schema_version": 1, "tasks": [], "sessions": "bad"},
+            "missing_tasks_sessions": {"schema_version": 1},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            session = helpers.init_session(workspace)
+            task_id = "task-20261001-000032-index-rebuild"
+            helpers.create_task(workspace, task_id, session_id=session["session_id"])
+            index_path = helpers.store_dir(workspace) / "index.json"
+
+            for name, payload in cases.items():
+                with self.subTest(name=name):
+                    index_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                    result = helpers.run_json("init.py", "--workspace", str(workspace))
+                    self.assertTrue(result["session_id"].startswith("sr-"))
+                    rebuilt = helpers.index_of(workspace)
+                    self.assertEqual(rebuilt["schema_version"], 1)
+                    self.assertIn(task_id, rebuilt["tasks"])
+                    self.assertIn(session["session_id"], rebuilt["sessions"])
+
     def test_future_index_schema_is_not_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

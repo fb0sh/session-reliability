@@ -297,9 +297,13 @@ Ordinary owner mutations automatically renew the task lease using the task's
 persisted `lease_duration_seconds` (default 900) and refresh the session
 heartbeat.
 
-`attach-session --lease-seconds N` sets the new owner's lease duration.
+`attach-session --lease-seconds N` sets the new owner's lease duration.  If
+`--lease-seconds` is omitted, the new owner inherits the task's persisted
+`lease_duration_seconds` (legacy V1 fallback: 900).
+
 `renew-lease --lease-seconds N` extends the current owner's lease and updates
-the preferred duration used by later heartbeats.  `renew-lease` cannot change
+the preferred duration used by later heartbeats.  If `--lease-seconds` is
+omitted, the current task duration is preserved.  `renew-lease` cannot change
 ownership or bind an unowned task.
 
 `finish-operation` usually uses `--operation-id <op-id>`; if omitted, the

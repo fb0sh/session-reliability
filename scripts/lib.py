@@ -450,6 +450,10 @@ def session_lock_path(store: Path, session_id: str) -> Path:
     return store / "sessions" / f"{session_id}.lock"
 
 
+def session_identity_lock_path(store: Path) -> Path:
+    return store / "sessions.identity.lock"
+
+
 # ---------------------------------------------------------------------------
 # Schema / model helpers
 # ---------------------------------------------------------------------------
@@ -576,15 +580,22 @@ def apply_task_ownership_transfer(
     task_id: str,
     session_id: str,
     force: bool,
-    lease_duration_seconds: int,
+    lease_duration_seconds: Optional[int] = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Apply attach/renew/takeover ownership semantics in memory.
 
-    Must be called while holding the task lock.  The caller is responsible for
-    persisting the mutated task state and for best-effort session metadata
-    cleanup after the task write.
+    Must be called while holding the task lock.  When
+    ``lease_duration_seconds`` is None, the task's persisted duration is
+    preserved (with the legacy V1 fallback of 900 seconds).  The caller is
+    responsible for persisting the mutated task state and for best-effort
+    session metadata cleanup after the task write.
     """
-    if not isinstance(lease_duration_seconds, int) or isinstance(lease_duration_seconds, bool) or lease_duration_seconds <= 0:
+    duration = (
+        lease_duration_seconds
+        if lease_duration_seconds is not None
+        else get_lease_duration_seconds(state)
+    )
+    if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
         raise ValidationError("lease_duration_seconds must be a positive integer")
 
     owner = state.get("owner_session")
@@ -595,7 +606,7 @@ def apply_task_ownership_transfer(
         events.append(("TASK_ATTACHED", {"session_id": session_id}))
     elif owner == session_id:
         events.append(
-            ("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": lease_duration_seconds})
+            ("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": duration})
         )
     else:
         if lease_valid and not force:
@@ -621,8 +632,8 @@ def apply_task_ownership_transfer(
         )
 
     state["owner_session"] = session_id
-    state["lease_duration_seconds"] = lease_duration_seconds
-    state["lease_expires_at"] = lease_expiry_from_now(lease_duration_seconds)
+    state["lease_duration_seconds"] = duration
+    state["lease_expires_at"] = lease_expiry_from_now(duration)
     events.append(("SESSION_ATTACHED", {"session_id": session_id}))
     return events
 
@@ -1056,15 +1067,16 @@ def _read_index_unlocked(store: Path) -> dict[str, Any]:
     path = store / INDEX_FILENAME
     try:
         index = load_json(path)
-    except StoreError:
+        check_schema_version(index, where=str(path))
+        if not isinstance(index.get("tasks"), dict) or not isinstance(index.get("sessions"), dict):
+            raise SchemaError(f"{path} has invalid tasks/sessions shape")
+    except FutureSchemaError:
+        # Future versions must never be overwritten or downgraded.
+        raise
+    except (StoreError, CorruptionError):
+        # Missing, invalid JSON, invalid current schema, or invalid shape is a
+        # disposable cache corruption and may be rebuilt.
         return empty_index()
-    except CorruptionError:
-        return empty_index()
-    if check_schema_version(index, where=str(path)) > SCHEMA_VERSION:
-        raise FutureSchemaError(f"{path} uses a future schema_version")
-    if not isinstance(index.get("tasks"), dict) or not isinstance(index.get("sessions"), dict):
-        return empty_index()
-    index.setdefault("schema_version", SCHEMA_VERSION)
     return index
 
 
@@ -1126,8 +1138,10 @@ def ensure_store(store: Path) -> dict[str, Any]:
             save_index_unlocked(store, index)
             return index
         index = _read_index_unlocked(store)
-        # If the index contains no useful data but task directories exist, rebuild.
-        if not index["tasks"] and not index["sessions"] and any((store / "tasks").iterdir() if (store / "tasks").is_dir() else []):
+        # Empty index after a missing/corrupt current-version cache is
+        # rebuilt from authoritative task/session files.  A valid empty index
+        # with an actually empty store is harmless to rewrite.
+        if not index["tasks"] and not index["sessions"]:
             index = rebuild_index_unlocked(store)
             save_index_unlocked(store, index)
         return index
@@ -1235,14 +1249,26 @@ def create_or_touch_session(
     session_id: Optional[str] = None,
     native_session_id: Optional[str] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Create a reliability session or refresh last_seen_at.
+    """Create or touch a reliability session with atomic native-id binding.
 
-    If no explicit reliability session id is supplied but a runtime-native id
-    is, reuse the unique existing reliability session with that native id.
-    Duplicate native ids fail safely instead of choosing randomly.
-
-    Returns (session, created).
+    Native-session-id uniqueness and binding mutations are serialized by a
+    store-level identity lock.  Lock order is identity -> session -> index.
     """
+    store = Path(store)
+    with ProcessLock(session_identity_lock_path(store)):
+        return _create_or_touch_session_locked(
+            store,
+            session_id=session_id,
+            native_session_id=native_session_id,
+        )
+
+
+def _create_or_touch_session_locked(
+    store: Path,
+    *,
+    session_id: Optional[str] = None,
+    native_session_id: Optional[str] = None,
+) -> tuple[dict[str, Any], bool]:
     if session_id is None and native_session_id is not None:
         matches = find_session_by_native_id(store, native_session_id)
         if len(matches) > 1:
@@ -1259,9 +1285,6 @@ def create_or_touch_session(
     sid = session_id or generate_session_id()
     validate_id_component(sid, field="session_id")
 
-    # Enforce uniqueness before any read, corruption recovery, or write.  This
-    # also prevents explicit session-id calls from silently rebinding native-X
-    # to another reliability session.
     if native_session_id is not None:
         assert_native_session_id_available(
             store,
@@ -1299,8 +1322,6 @@ def create_or_touch_session(
             except SessionIdentityConflict:
                 raise
             except SRError:
-                # Session metadata is a transient runtime file.  Preserve the old
-                # file and replace it with a fresh valid session record.
                 backup = path.with_name(f"{path.name}.corrupt.{_timestamp_compact()}.bak")
                 with contextlib.suppress(OSError):
                     shutil.copy2(path, backup)
@@ -1310,6 +1331,9 @@ def create_or_touch_session(
             session = default_session(session_id=sid, native_session_id=native_session_id)
             created = True
         atomic_write_json(path, session)
+
+    # Identity lock remains held through index update, but the individual
+    # session lock has already been released.
     update_index_session(store, sid, session)
     return session, created
 

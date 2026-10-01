@@ -129,8 +129,9 @@ This file is a fast-discovery cache only.  It is never authoritative.
 }
 ```
 
-If the index is missing or corrupt, it can be rebuilt from task and session
-files.  If it uses a future `schema_version`, do not overwrite it.
+If the index is missing, invalid JSON, invalid current-version schema, or has an
+invalid `tasks` / `sessions` shape, it can be rebuilt from task and session
+files.  If it uses a future `schema_version`, do not overwrite or downgrade it.
 
 ## 5. Session schema
 

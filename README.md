@@ -134,7 +134,7 @@ CLI 参数优先级高于环境变量。
 
 一个有 owner 的 Task，在 lease 有效期间只接受 owner session 的 mutation。
 
-正常 mutation 会自动按 Task 持久化的 `lease_duration_seconds` 续租（默认 900 秒），因此自定义 `--lease-seconds` 不会在 heartbeat 后跳回默认值。每次成功的 owner mutation 也会刷新对应 session 的 `last_seen_at`。
+正常 mutation 会自动按 Task 持久化的 `lease_duration_seconds` 续租（默认 900 秒）。自定义 `--lease-seconds` 会被后续 heartbeat、未显式指定 duration 的 `renew-lease`、`attach-session` 和 takeover 保持，不会跳回默认值。每次成功的 owner mutation 也会刷新对应 session 的 `last_seen_at`。
 
 其他 Session 不能直接修改该 Task，需要等待 lease 过期后 takeover，或通过明确的 attach/resume 流程成为 owner。
 
