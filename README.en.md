@@ -91,7 +91,9 @@ python "<SKILL_ROOT>/scripts/init.py" --workspace "<WORKSPACE_ROOT>"
 
 # 2. create a durable task
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" create-task \
+  --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
+  create-task \
   --task-id task-20260930-223550-fix-downloader \
   --title "Fix downloader" \
   --objective "Make the downloader reliable."
@@ -99,6 +101,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 # 3. persist progress
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
   --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   --task task-20260930-223550-fix-downloader \
   add-step --title "Analyze logs"
 
@@ -133,6 +136,31 @@ SESSION_RELIABILITY_STORE
 
 CLI flags take priority over environment variables.
 
+## Session ownership and crash takeover
+
+A task with an owner accepts mutations only from that owner session while its
+lease is valid.
+
+Successful owner mutations renew the lease automatically, so an active Agent
+does not need a separate manual heartbeat.  They also refresh the owning
+session's `last_seen_at`.
+
+Another session cannot mutate the task directly.  It must wait for lease
+expiry and take over, or become owner through an explicit attach/resume flow.
+
+If the user explicitly confirms that the previous session crashed, became
+unavailable, or cannot continue, a new session may use explicit force takeover
+even while the old lease is still valid.  After takeover, reconcile dirty and
+`outcome_unknown` operations before continuing.
+
+`renew-lease` only extends the current owner's lease; it never changes
+ownership.  An unowned task must be bound with `attach-session` or `resume`
+before ordinary mutation.
+
+When the runtime provides a native session id, `init` reuses an existing
+reliability session when possible.  Duplicate native-session-id mappings fail
+safely instead of choosing one at random.
+
 ## Tests
 
 ```bash
@@ -144,7 +172,9 @@ dirty-operation recovery, operation success, lease blocking/takeover, revision
 conflicts, atomic writes, missing index rebuild, multiple unfinished tasks,
 corrupted `STATE.json`, and a full crash/takeover/completion integration test.
 It also includes skill structure tests for frontmatter, resource layout,
-reference links, and script cwd independence.
+reference links, and script cwd independence, plus session ownership, automatic
+lease renewal, force takeover, native-session-id reuse/conflict, and
+multi-session isolation tests.
 
 ## Safety
 

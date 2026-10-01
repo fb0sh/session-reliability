@@ -21,17 +21,24 @@ class ConcurrencyTests(unittest.TestCase):
             workspace = Path(tmp)
             store = lib.resolve_store(None, workspace=workspace)
             lib.ensure_store(store)
-            state = lib.create_task(store, title="Revision Task", objective="Detect conflict.")
+            session_id = "sr-20260930-030500-conflict"
+            state = lib.create_task(store, title="Revision Task", objective="Detect conflict.", session_id=session_id)
             task_id = state["task_id"]
             revision = state["revision"]
 
-            lib.mutate_task(store, task_id, lambda current: current.__setitem__("next_actions", ["A"]))
+            lib.mutate_task(
+                store,
+                task_id,
+                lambda current: current.__setitem__("next_actions", ["A"]),
+                session_id=session_id,
+            )
             with self.assertRaises(lib.RevisionConflict) as caught:
                 lib.mutate_task(
                     store,
                     task_id,
                     lambda current: current.__setitem__("next_actions", ["B"]),
                     expected_revision=revision,
+                    session_id=session_id,
                 )
             self.assertIn("revision conflict", caught.exception.message.lower())
             self.assertEqual(lib.load_task_state(store, task_id)["next_actions"], ["A"])
@@ -63,12 +70,7 @@ class ConcurrencyTests(unittest.TestCase):
             self.assertEqual(helpers.state_of(workspace, task_id)["owner_session"], session_a["session_id"])
 
             # Simulate the old session's lease expiring while it is no longer active.
-            store = lib.resolve_store(None, workspace=workspace)
-
-            def expire(current: dict) -> None:
-                current["lease_expires_at"] = "2000-01-01T00:00:00+00:00"
-
-            lib.mutate_task(store, task_id, expire)
+            helpers.expire_lease(workspace, task_id)
 
             taken = helpers.run_json(
                 "resume.py",
@@ -83,7 +85,7 @@ class ConcurrencyTests(unittest.TestCase):
     def test_process_lock_serializes_concurrent_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            helpers.init_session(workspace)
+            session = helpers.init_session(workspace)
             task_id = "task-20260930-030100-lock"
             helpers.create_task(workspace, task_id, title="Lock Task", objective="Concurrent mutation.")
 
@@ -92,6 +94,7 @@ class ConcurrencyTests(unittest.TestCase):
                     sys.executable,
                     str(SCRIPTS / "checkpoint.py"),
                     "--workspace", str(workspace),
+                    "--session-id", session["session_id"],
                     "--task", task_id,
                     "add-step",
                     "--title", f"Concurrent {index}",

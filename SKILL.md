@@ -43,9 +43,11 @@ When this skill activates for a workspace:
 3. Resume the current task when it matches the user's work.
 4. If multiple resumable tasks match, present candidates and let the user
    message decide; do not randomly bind to one.
-5. Create a durable task before beginning substantial new multi-step work.
-6. For recovered work, read `TASK.md`, `STATE.json`, and `CHECKPOINT.md`.
-7. If `dirty`, `active_operation`, or unresolved state exists, follow
+5. Keep the reliability `session_id` returned by initialization for the lifetime
+   of the current conversation and pass it to subsequent task mutations.
+6. Create a durable task before beginning substantial new multi-step work.
+7. For recovered work, read `TASK.md`, `STATE.json`, and `CHECKPOINT.md`.
+8. If `dirty`, `active_operation`, or unresolved state exists, follow
    `references/recovery.md` before continuing.
 
 Read `references/cli.md` for exact bundled-script invocations.
@@ -120,8 +122,16 @@ Honor task leases and revision checks. Do not silently overwrite a newer task
 revision. A session may take over an expired lease and must emit a takeover
 event.
 
-Read `references/concurrency.md` for leases, takeover, locks, revision
-conflicts, and multi-session behavior.
+Only the current owner may mutate a task while its lease is valid.  Successful
+owner mutations renew the lease automatically.  An unowned task must be bound
+through attach/resume before mutation.
+
+If the user confirms the previous session failed, became unavailable, or
+cannot continue, use explicit force takeover even when its lease is still
+valid.  Reconcile dirty and uncertain external operations before continuing.
+
+Read `references/concurrency.md` for lease, takeover, lock, revision, and
+multi-session rules.  Read `references/recovery.md` for crash recovery.
 
 ## References
 

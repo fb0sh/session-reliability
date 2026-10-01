@@ -157,6 +157,11 @@ class SchemaError(CorruptionError):
     kind = "invalid_state_schema"
 
 
+class SessionIdentityConflict(SRError):
+    code = 8
+    kind = "session_identity_conflict"
+
+
 # ---------------------------------------------------------------------------
 # Time / IDs
 # ---------------------------------------------------------------------------
@@ -515,6 +520,38 @@ def validate_session(session: dict[str, Any], *, where: str = "session.json") ->
             raise SchemaError(f"{where} missing required field {key!r}")
     if session["status"] not in SESSION_STATUSES:
         raise SchemaError(f"{where}.status must be one of {SESSION_STATUSES}")
+
+
+def validate_task_ownership(
+    state: dict[str, Any],
+    *,
+    task_id: str,
+    session_id: Optional[str],
+) -> None:
+    """Reject ordinary mutations that are not made by the current owner."""
+    owner = state.get("owner_session")
+    if owner is None:
+        raise LeaseConflict(
+            f"task {task_id} is unowned; attach-session or resume is required before mutation",
+            details={"reason": "unowned", "owner_session": None, "session_id": session_id},
+        )
+    if not session_id:
+        raise LeaseConflict(
+            f"task {task_id} is owned by session {owner}; --session-id is required for mutation",
+            details={"reason": "missing_session", "owner_session": owner, "session_id": None},
+        )
+    if session_id != owner:
+        lease_valid = lease_is_valid(state.get("lease_expires_at"))
+        raise LeaseConflict(
+            f"task {task_id} is owned by session {owner}; session {session_id} cannot mutate it "
+            f"({'lease still valid' if lease_valid else 'lease expired; use resume or attach-session to take over'})",
+            details={
+                "reason": "lease_valid" if lease_valid else "lease_expired",
+                "owner_session": owner,
+                "lease_expires_at": state.get("lease_expires_at"),
+                "session_id": session_id,
+            },
+        )
 
 
 def default_state(
@@ -1058,6 +1095,30 @@ def update_index_session(store: Path, session_id: str, session: dict[str, Any]) 
 # ---------------------------------------------------------------------------
 
 
+def find_session_by_native_id(store: Path, native_session_id: str) -> list[dict[str, Any]]:
+    """Return valid reliability sessions matching a runtime-native session id.
+
+    Scans session files directly; index.json is not authoritative.  Corrupt
+    session files are ignored for lookup so a single bad metadata file cannot
+    poison discovery.
+    """
+    matches: list[dict[str, Any]] = []
+    sessions_dir = store / "sessions"
+    if not sessions_dir.is_dir():
+        return matches
+    for child in sorted(sessions_dir.glob("*.json")):
+        try:
+            session = load_json(child)
+            validate_session(session, where=str(child))
+            if session.get("session_id") != child.stem:
+                raise SchemaError(f"session_id mismatch in {child}")
+        except SRError:
+            continue
+        if session.get("native_session_id") == native_session_id:
+            matches.append(session)
+    return matches
+
+
 def create_or_touch_session(
     store: Path,
     *,
@@ -1066,8 +1127,25 @@ def create_or_touch_session(
 ) -> tuple[dict[str, Any], bool]:
     """Create a reliability session or refresh last_seen_at.
 
+    If no explicit reliability session id is supplied but a runtime-native id
+    is, reuse the unique existing reliability session with that native id.
+    Duplicate native ids fail safely instead of choosing randomly.
+
     Returns (session, created).
     """
+    if session_id is None and native_session_id is not None:
+        matches = find_session_by_native_id(store, native_session_id)
+        if len(matches) > 1:
+            raise SessionIdentityConflict(
+                f"multiple reliability sessions claim native_session_id {native_session_id!r}",
+                details={
+                    "native_session_id": native_session_id,
+                    "session_ids": [match.get("session_id") for match in matches],
+                },
+            )
+        if len(matches) == 1:
+            session_id = matches[0].get("session_id")
+
     sid = session_id or generate_session_id()
     validate_id_component(sid, field="session_id")
     path = session_path(store, sid)
@@ -1231,14 +1309,21 @@ def create_task(
 def mutate_task(
     store: Path,
     task_id: str,
-    mutation: Callable[[dict[str, Any]], Optional[list[dict[str, Any]]]],
+    mutation: Callable[[dict[str, Any]], Optional[list[tuple[str, dict[str, Any]]]]],
     *,
     expected_revision: Optional[int] = None,
     events: Optional[list[tuple[str, dict[str, Any]]]] = None,
     session_id: Optional[str] = None,
-    touch_session: bool = False,
+    enforce_lease: bool = True,
+    renew_lease: bool = True,
+    touch_session: bool = True,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> dict[str, Any]:
     """Apply an in-place state mutation under the per-task lock.
+
+    Ordinary task mutations enforce the current owner/lease guard.  Owner
+    changes must use ``enforce_lease=False`` internally via explicit
+    attach/resume/takeover flows, never through ordinary mutation callbacks.
 
     ``mutation`` receives the currently loaded state and may mutate it.  It may
     return a list of event tuples to append after the state is written.  The
@@ -1255,11 +1340,23 @@ def mutate_task(
                 f"revision conflict for {task_id}: expected {expected_revision}, found {state.get('revision')}",
                 details={"expected": expected_revision, "found": state.get("revision")},
             )
+
+        owner_before = state.get("owner_session")
+        if enforce_lease:
+            validate_task_ownership(state, task_id=task_id, session_id=session_id)
+
         before = state.get("revision")
         returned_events = mutation(state)
+        if enforce_lease and state.get("owner_session") != owner_before:
+            raise ValidationError("ordinary task mutation cannot change owner_session")
+
         all_events = list(events or [])
         if returned_events:
             all_events.extend(returned_events)
+
+        if renew_lease and enforce_lease and session_id and state.get("owner_session") == session_id:
+            state["lease_expires_at"] = lease_expiry_from_now(lease_seconds)
+
         validate_state(state, where=str(path / STATE_FILENAME))
         state["revision"] = before + 1
         state["updated_at"] = now_iso()

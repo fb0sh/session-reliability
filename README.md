@@ -86,7 +86,9 @@ python "<SKILL_ROOT>/scripts/init.py" --workspace "<WORKSPACE_ROOT>"
 
 # 2. 创建持久任务
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" create-task \
+  --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
+  create-task \
   --task-id task-20260930-223550-fix-downloader \
   --title "修复下载器" \
   --objective "让下载器稳定可靠。"
@@ -94,6 +96,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 # 3. 持久化进度
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
   --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   --task task-20260930-223550-fix-downloader \
   add-step --title "分析日志"
 
@@ -127,6 +130,20 @@ SESSION_RELIABILITY_STORE
 
 CLI 参数优先级高于环境变量。
 
+## Session ownership 与崩溃接管
+
+一个有 owner 的 Task，在 lease 有效期间只接受 owner session 的 mutation。
+
+正常 mutation 会自动续租，因此活跃 Agent 不需要手动维护 heartbeat；每次成功的 owner mutation 也会刷新对应 session 的 `last_seen_at`。
+
+其他 Session 不能直接修改该 Task，需要等待 lease 过期后 takeover，或通过明确的 attach/resume 流程成为 owner。
+
+如果用户明确确认旧 Session 已崩溃、失效或无法继续，新 Session 可以执行显式 force takeover，即使旧 lease 仍然有效。接管后必须先处理 dirty / `outcome_unknown` 状态，再继续工作。
+
+`renew-lease` 只延长当前 owner 的 lease，不会改变 owner。Unowned Task 必须先通过 `attach-session` 或 `resume` 绑定。
+
+如果 Runtime 提供 native session id，`init` 会尽可能复用已有 reliability session；若发现重复 native session id 映射，会安全失败而不是随机选择。
+
 ## 测试
 
 ```bash
@@ -134,7 +151,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 测试覆盖 init、创建任务、进度、新 Session 恢复、dirty operation 恢复、operation 成功、lease 阻止/接管、revision 冲突、原子写、缺失 index 重建、多未完成任务、损坏 `STATE.json`，以及完整 crash/takeover/completion 集成流程。
-另外包含 Skill frontmatter、资源结构、reference 链接、script cwd independence 的结构测试。
+另外包含 Skill frontmatter、资源结构、reference 链接、script cwd independence 的结构测试，以及 session ownership、lease 自动续期、force takeover、native session id 复用/冲突和多 Session 隔离测试。
 
 ## 安全
 

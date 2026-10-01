@@ -95,7 +95,10 @@ def _mutate(
     args: argparse.Namespace,
     mutation: Callable[[dict[str, Any]], Optional[list[tuple[str, dict[str, Any]]]]],
     *,
-    touch_session: bool = False,
+    enforce_lease: bool = True,
+    renew_lease: bool = True,
+    touch_session: bool = True,
+    lease_seconds: int = lib.DEFAULT_LEASE_SECONDS,
 ) -> dict[str, Any]:
     workspace, store, session_id, task_id = lib.cli_context(args)
     lib.ensure_store(store)
@@ -107,7 +110,10 @@ def _mutate(
         mutation,
         expected_revision=expected,
         session_id=session_id,
+        enforce_lease=enforce_lease,
+        renew_lease=renew_lease,
         touch_session=touch_session,
+        lease_seconds=lease_seconds,
     )
 
 
@@ -452,11 +458,15 @@ def cmd_renew_lease(args: argparse.Namespace) -> int:
     session_id = _require_session(args)
 
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        state["owner_session"] = session_id
+        # mutate_task enforces that the caller is the current owner.  This
+        # command extends the lease; it must never change owner_session.
         state["lease_expires_at"] = lib.lease_expiry_from_now(args.lease_seconds)
         return [("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": args.lease_seconds})]
 
-    _emit_state(_mutate(args, mutation, touch_session=True), _store_from_args(args))
+    _emit_state(
+        _mutate(args, mutation, renew_lease=False, touch_session=True),
+        _store_from_args(args),
+    )
     return 0
 
 
@@ -466,28 +476,42 @@ def cmd_attach_session(args: argparse.Namespace) -> int:
     def mutation(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         owner = state.get("owner_session")
         lease_valid = lib.lease_is_valid(state.get("lease_expires_at"))
-        if owner and owner != session_id and lease_valid and not args.force:
-            raise lib.LeaseConflict(
-                f"task is leased to {owner} until {state.get('lease_expires_at')}",
-                details={"owner_session": owner, "lease_expires_at": state.get("lease_expires_at")},
-            )
         events: list[tuple[str, dict[str, Any]]] = []
-        if owner and owner != session_id:
-            events.append(("TASK_TAKEOVER", {"from_session": owner, "to_session": session_id, "forced": bool(args.force)}))
-        else:
+
+        if owner is None:
             events.append(("TASK_ATTACHED", {"session_id": session_id}))
+        elif owner == session_id:
+            events.append(("LEASE_RENEWED", {"session_id": session_id, "lease_seconds": args.lease_seconds}))
+        else:
+            if lease_valid and not args.force:
+                raise lib.LeaseConflict(
+                    f"task is leased to {owner} until {state.get('lease_expires_at')}",
+                    details={
+                        "reason": "lease_valid",
+                        "owner_session": owner,
+                        "lease_expires_at": state.get("lease_expires_at"),
+                    },
+                )
+            events.append(
+                (
+                    "TASK_TAKEOVER",
+                    {
+                        "from_session": owner,
+                        "to_session": session_id,
+                        "lease_expired": not lease_valid,
+                        "forced": bool(args.force and lease_valid),
+                    },
+                )
+            )
         events.append(("SESSION_ATTACHED", {"session_id": session_id}))
         state["owner_session"] = session_id
         state["lease_expires_at"] = lib.lease_expiry_from_now(args.lease_seconds)
         return events
 
-    state = _mutate(args, mutation, touch_session=True)
-    lib.set_session_active_task(
-        lib.resolve_store(lib.arg_value(args, "store"), workspace=lib.resolve_workspace(lib.arg_value(args, "workspace"))),
-        session_id,
-        state["task_id"],
+    _emit_state(
+        _mutate(args, mutation, enforce_lease=False, renew_lease=False, touch_session=True),
+        _store_from_args(args),
     )
-    _emit_state(state, _store_from_args(args))
     return 0
 
 
@@ -495,21 +519,40 @@ def cmd_detach_session(args: argparse.Namespace) -> int:
     workspace, store, session_id, task_id = lib.cli_context(args)
     lib.ensure_store(store)
     task_id = _require_task(args)
-    state = lib.load_task_state(store, task_id)
-    owner = state.get("owner_session")
-    effective_session = session_id or owner
-    if not effective_session:
-        raise lib.ValidationError("no session is attached; provide --session-id")
+    session_id = _require_session(args)
+    snapshot = lib.load_task_state(store, task_id)
+    owner = snapshot.get("owner_session")
+    if owner is None:
+        raise lib.ValidationError("task is already unowned")
+    if owner != session_id:
+        raise lib.LeaseConflict(
+            f"task is owned by {owner}, not {session_id}",
+            details={"reason": "owner_mismatch", "owner_session": owner, "session_id": session_id},
+        )
 
     def mutation(current: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        if owner and session_id and owner != session_id:
-            raise lib.ValidationError(f"task is owned by {owner}, not {session_id}")
+        current_owner = current.get("owner_session")
+        if current_owner is None:
+            raise lib.ValidationError("task is already unowned")
+        if current_owner != session_id:
+            raise lib.LeaseConflict(
+                f"task is owned by {current_owner}, not {session_id}",
+                details={"reason": "owner_mismatch", "owner_session": current_owner, "session_id": session_id},
+            )
         current["owner_session"] = None
         current["lease_expires_at"] = None
-        return [("TASK_DETACHED", {"session_id": effective_session})]
+        return [("TASK_DETACHED", {"session_id": session_id})]
 
-    state = lib.mutate_task(store, task_id, mutation, session_id=None)
-    lib.set_session_active_task(store, effective_session, None)
+    state = lib.mutate_task(
+        store,
+        task_id,
+        mutation,
+        session_id=session_id,
+        enforce_lease=False,
+        renew_lease=False,
+        touch_session=False,
+    )
+    lib.set_session_active_task(store, session_id, None)
     _emit_state(state, store)
     return 0
 

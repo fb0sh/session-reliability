@@ -262,8 +262,8 @@ Required fields:
 | `current_step` | string or null | at most one main step |
 | `steps` | array | step objects |
 | `next_actions` | array of strings | immediate next actions |
-| `owner_session` | string or null | lease owner |
-| `lease_expires_at` | ISO timestamp or null | lease expiry |
+| `owner_session` | string or null | only this session may run ordinary task mutations |
+| `lease_expires_at` | ISO timestamp or null | lease expiry; auto-renewed on successful owner mutation |
 | `dirty` | boolean | unresolved side effect/recovery flag |
 | `active_operation` | string or null | operation id |
 | `operations` | array | operation objects |

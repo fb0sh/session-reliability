@@ -31,7 +31,7 @@ class CheckpointTests(unittest.TestCase):
             state = helpers.state_of(workspace, result["task_id"])
             self.assertEqual(state["schema_version"], 1)
             self.assertEqual(state["task_id"], result["task_id"])
-            self.assertEqual(state["status"], "pending")
+            self.assertEqual(state["status"], "in_progress")
             self.assertEqual(state["revision"], 1)
             self.assertIn("R1", (base / "TASK.md").read_text(encoding="utf-8"))
             self.assertIn("S1", (base / "TASK.md").read_text(encoding="utf-8"))

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -39,8 +38,10 @@ class IntegrationRecoveryTests(unittest.TestCase):
             helpers.cp_json(workspace, task_id, "start-operation", "--description", "Write generated artifact")
 
             # Simulate a crash: the process ends without finish-operation.  The
-            # task's lease remains but will expire after one second.
-            time.sleep(1.5)
+            # task still has an unexpired owner lease until it expires naturally;
+            # the test models a real crash by expiring that lease before
+            # Session B attempts normal resume/takeover.
+            helpers.expire_lease(workspace, task_id)
             session_b = helpers.init_session(workspace)
 
             resumed = helpers.run_json(

@@ -4,6 +4,20 @@ This document defines V1 recovery behavior.  It is intentionally simple and
 file-oriented; there is no event-sourcing rebuild engine, database, daemon, or
 distributed coordination.
 
+## Contents
+
+- [1. What a fresh Agent must read](#1-what-a-fresh-agent-must-read)
+- [2. Normal recovery algorithm](#2-normal-recovery-algorithm)
+- [3. Dirty recovery](#3-dirty-recovery)
+- [4. `outcome_unknown` handling](#4-outcome_unknown-handling)
+- [5. Expired lease and takeover](#5-expired-lease-and-takeover)
+- [6. State corruption recovery](#6-state-corruption-recovery)
+- [7. Missing index](#7-missing-index)
+- [8. Missing CHECKPOINT.md](#8-missing-checkpointmd)
+- [9. Multiple unfinished tasks](#9-multiple-unfinished-tasks)
+- [10. External state revalidation](#10-external-state-revalidation)
+- [11. Crash recovery checklist](#11-crash-recovery-checklist)
+
 ## 1. What a fresh Agent must read
 
 For a selected task, read in this order:
@@ -144,6 +158,29 @@ See `references/cli.md` for exact command syntax.
 
 Takeover always appends `TASK_TAKEOVER` and updates the session's
 `active_task`.
+
+### User-confirmed crash recovery
+
+If the user explicitly says that the previous session failed, became
+unavailable, or cannot continue, treat that as sufficient recovery intent.
+The new session may use explicit force takeover even when the previous lease
+has not expired.
+
+Recovery sequence:
+
+```text
+user confirms old session is unavailable
+-> resume/attach with explicit force takeover
+-> TASK_TAKEOVER written with forced=true
+-> running/planned operation becomes outcome_unknown
+-> dirty remains true
+-> inspect external state
+-> finish-operation as succeeded/failed/outcome_unknown
+-> continue normal owner mutations
+```
+
+Do not use force takeover silently.  It must be justified by explicit user
+intent or an equivalent clear confirmation from the runtime.
 
 ## 6. State corruption recovery
 

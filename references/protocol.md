@@ -54,6 +54,16 @@ resolve store:
 `init.py` creates the store, index, `sessions/`, `tasks/`, and `archive/` when
 needed.
 
+If `--session-id` is supplied, that exact reliability session is used.  If it
+is omitted but `--native-session-id` is supplied, initialization reuses the
+unique existing reliability session with that native id.  Zero matches creates
+a new `sr-*` session; multiple matches fail safely with
+`session_identity_conflict` instead of selecting randomly.
+
+Keep the returned reliability `session_id` for the lifetime of the current
+conversation and pass it to subsequent task mutations.  Do not generate a new
+`sr-*` session for every user turn.
+
 ## 3. Session lifecycle
 
 ```mermaid
@@ -116,6 +126,19 @@ abandoned
 Task creation:
 
 See `references/cli.md` for exact command syntax.
+
+Ordinary task mutations:
+
+- Require `session_id == owner_session` while the lease is valid.
+- Are rejected with `lease_conflict` if the caller omits `--session-id`, uses a
+  foreign session id, or attempts to mutate an unowned task.
+- Never change `owner_session`.
+- Automatically renew the owner's lease and refresh the session heartbeat on
+  success.
+
+An unowned task must be bound through `attach-session` or `resume` before any
+ordinary mutation.  A foreign session with an expired/missing lease must use
+the same explicit flows rather than mutating directly.
 
 Completion:
 
@@ -304,7 +327,11 @@ sequenceDiagram
     end
 ```
 
-Forced takeover is available only as an explicit override:
+Forced takeover is available only as an explicit override.  It is appropriate
+when the user explicitly says the previous session failed, became unavailable,
+or cannot continue, even if the previous lease is still valid.  It writes
+`TASK_TAKEOVER` with `forced=true` and must be followed by dirty/uncertain
+operation reconciliation.
 
 See `references/cli.md` for exact command syntax.
 

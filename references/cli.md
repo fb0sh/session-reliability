@@ -34,6 +34,10 @@ Conceptual placeholders:
 
 These are placeholders, not environment variables.
 
+For task mutations, `--session-id "<SESSION_ID>"` is normally required whenever
+the task has an owner.  The reliability session id is returned by `init.py`
+and must be reused for the lifetime of the current conversation.
+
 Common options:
 
 ```text
@@ -72,6 +76,11 @@ Options:
 Stdout is JSON containing at least `session_id`, `store`, `active_task`, and
 `resumable_tasks`.
 
+If `--session-id` is omitted but `--native-session-id` is present, `init.py`
+reuses the unique existing reliability session with that native id.  Zero
+matches creates a new `sr-*` session; multiple matches fail with
+`session_identity_conflict`.
+
 ## List tasks
 
 ```bash
@@ -104,6 +113,7 @@ Options:
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
   --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   create-task \
   --task-id "<TASK_ID>" \
   --title "Fix downloader" \
@@ -127,49 +137,50 @@ Options:
 ```
 
 If `--session-id` is supplied, the new task is attached to that session and an
-initial lease is written.
+initial lease is written.  If it is omitted, the task is unowned; bind it with
+`attach-session` or `resume` before any ordinary mutation.
 
 ## Steps
 
 ```bash
 # add
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   add-step --title "Analyze logs"
 
 # start
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   start-step --step step-1
 
 # complete
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   complete-step --step step-1 --summary "Root cause found"
 
 # fail
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   fail-step --step step-1 --summary "Could not reproduce"
 
 # block
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   block-step --step step-1 --reason "Dependency unavailable"
 
 # set current step
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   set-current-step --step step-2
 
 # clear current step
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   set-current-step --clear
 
 # replace next actions
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   set-next-actions --action "Implement fix" --action "Run tests"
 ```
 
@@ -179,11 +190,11 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   record-finding --summary "404 responses are not handled"
 
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   record-decision --summary "Use retry with backoff"
 ```
 
@@ -191,7 +202,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   update-requirements \
   --objective "Updated objective" \
   --requirement "New requirement" \
@@ -205,15 +216,15 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   add-blocker --summary "Waiting for package index"
 
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   resolve-blocker --summary "Waiting for package index"
 
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   resolve-blocker --all
 ```
 
@@ -221,7 +232,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   checkpoint \
   --important-context "Log file: /var/log/app.log" \
   --blocker "Waiting for external API"
@@ -243,19 +254,19 @@ Every durable mutation also refreshes `CHECKPOINT.md`; the explicit
 ```bash
 # Persist intent before executing the external side effect.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   start-operation --description "Install package X"
 
 # Inspect result, then record a known outcome.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   finish-operation \
   --operation-id op-1 \
   --outcome succeeded \
   --result-summary "Package confirmed installed"
 
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   finish-operation \
   --operation-id op-1 \
   --outcome failed \
@@ -263,7 +274,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 # Uncertain outcome: record unknown, inspect external state later.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   finish-operation \
   --operation-id op-1 \
   --outcome outcome_unknown \
@@ -271,7 +282,7 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 # Alias for outcome_unknown
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   unknown-operation \
   --operation-id op-1 \
   --result-summary "State uncertain"
@@ -279,6 +290,10 @@ python "<SKILL_ROOT>/scripts/checkpoint.py" \
 
 `start-operation` also accepts `--operation-id` and
 `--side-effect` / `--no-side-effect`.
+
+Ordinary owner mutations automatically renew the task lease and refresh the
+session heartbeat.  `renew-lease` only extends the current owner's lease; it
+cannot change ownership or bind an unowned task.
 
 `finish-operation` usually uses `--operation-id <op-id>`; if omitted, the
 current active operation is resolved when unambiguous.
@@ -310,39 +325,43 @@ python "<SKILL_ROOT>/scripts/resume.py" \
 `active_task`.  If a running operation is discovered, it is conservatively
 marked `outcome_unknown` and the task stays dirty until explicitly finished.
 
+`--force-takeover` is appropriate when the user explicitly confirms that the
+previous session failed, became unavailable, or cannot continue.  It records
+`TASK_TAKEOVER` with `forced=true` even if the previous lease is still valid.
+
 ## Lease and session attachment
 
 ```bash
 # Renew the lease for a session.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
-  renew-lease --session-id "<SESSION_ID>" --lease-seconds 900
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
+  renew-lease --lease-seconds 900
 
 # Attach a session to a task.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
-  attach-session --session-id "<SESSION_ID>"
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
+  attach-session
 
 # Forced attach/takeover.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
-  attach-session --session-id "<SESSION_ID>" --force
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
+  attach-session --force
 
 # Detach the current session.
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
-  detach-session --session-id "<SESSION_ID>"
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
+  detach-session
 ```
 
 ## Status changes and completion
 
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   set-status --status blocked --note "Waiting for access"
 
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
-  --workspace "<WORKSPACE_ROOT>" --task "<TASK_ID>" \
+  --workspace "<WORKSPACE_ROOT>" --session-id "<SESSION_ID>" --task "<TASK_ID>" \
   set-status --status completed
 ```
 
@@ -375,6 +394,7 @@ Any mutating command can pass an expected revision:
 ```bash
 python "<SKILL_ROOT>/scripts/checkpoint.py" \
   --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   --task "<TASK_ID>" \
   --expected-revision <N> \
   set-next-actions --action "Continue"

@@ -4,6 +4,20 @@ This document defines the V1 concurrency model.  It is deliberately simple:
 filesystem locks, optimistic revisions, atomic writes, and leases.  There is
 no database, daemon, RPC, watcher, distributed consensus, or remote sync.
 
+## Contents
+
+- [1. Concurrency goals](#1-concurrency-goals)
+- [2. Lock strategy](#2-lock-strategy)
+- [3. Revision strategy](#3-revision-strategy)
+- [4. Task ownership and lease semantics](#4-task-ownership-and-lease-semantics)
+- [5. Multi-session behavior](#5-multi-session-behavior)
+- [6. Atomic writes](#6-atomic-writes)
+- [7. Conflict handling](#7-conflict-handling)
+- [8. JSON vs Markdown](#8-json-vs-markdown)
+- [9. Index consistency](#9-index-consistency)
+- [10. V1 limitations](#10-v1-limitations)
+- [11. Operational checklist](#11-operational-checklist)
+
 ## 1. Concurrency goals
 
 - One task must not be silently corrupted by two Agents.
@@ -94,7 +108,31 @@ If omitted, the command locks, re-reads the latest revision, and writes
 `latest + 1`.  Passing `--expected-revision` gives callers optimistic
 concurrency protection between their own read and their write.
 
-## 4. Lease semantics
+## 4. Task ownership and lease semantics
+
+Ownership state machine:
+
+```text
+UNOWNED
+   | attach-session / resume
+   v
+OWNED + VALID LEASE
+   | owner mutation or explicit renew-lease
+   v
+OWNED + VALID LEASE
+
+OWNED + EXPIRED LEASE
+   | another session resume
+   v
+TAKEOVER
+   | TASK_TAKEOVER, owner_session changes
+
+OWNED + VALID LEASE
+   | explicit force takeover
+   v
+TAKEOVER
+   | TASK_TAKEOVER, forced=true
+```
 
 Lease fields in `STATE.json`:
 
@@ -111,22 +149,38 @@ Default lease duration:
 15 minutes (900 seconds)
 ```
 
-Rules:
+Ownership and mutation rules:
 
-1. `owner_session == current session`: renew `lease_expires_at` while working.
-2. `owner_session != current session` and lease is valid:
-   - no automatic takeover
-   - resume returns a `lease_conflict`
-3. `owner_session != current session` and lease is missing or expired:
-   - takeover is allowed automatically
-   - append `TASK_TAKEOVER`
-   - set `owner_session = current session`
-   - renew the lease
-4. `owner_session == null`: bind current session and set a new lease.
-5. `--force-takeover` overrides a valid lease, but must be an explicit,
-   justified override.  It still emits `TASK_TAKEOVER`.
+1. Ordinary task mutations require `session_id == owner_session`.
+2. An owned task with a missing caller `session_id` is rejected with
+   `lease_conflict`.
+3. A foreign session cannot mutate an owned task even if the lease is expired.
+   It must use `resume` or `attach-session` to become the owner.
+4. An unowned task cannot be mutated.  Use `attach-session` or `resume` to bind
+   it first.
+5. The current owner may continue after its lease expires; the next successful
+   owner mutation renews the lease.
+6. Every successful ordinary mutation by the owner automatically renews
+   `lease_expires_at` and refreshes `sessions/<session-id>.json.last_seen_at`.
+7. Ordinary mutation and automatic heartbeat never change `owner_session`.
+8. `renew-lease` only extends the current owner's lease.  It cannot bind an
+   unowned task and cannot change ownership.
+9. Ownership changes happen only through `attach-session`, `resume`, or an
+   explicit `--force-takeover`.
+10. Takeover writes `TASK_TAKEOVER` with `from_session`, `to_session`,
+    `lease_expired`, and `forced`.
+11. Explicit `renew-lease` writes `LEASE_RENEWED` and `SESSION_ATTACHED`.
+    Ordinary mutation heartbeat is metadata only and does not add
+    `LEASE_RENEWED` events, avoiding log noise.
 
 Renewing a lease does **not** clear dirty state or resolve operations.
+
+### Force takeover
+
+`--force-takeover` is reserved for explicit user intent: the user says the
+previous session crashed, became unavailable, or cannot continue.  It may
+override a valid foreign lease but still emits `TASK_TAKEOVER` with
+`forced=true`.  After takeover, reconcile dirty operations before continuing.
 
 ## 5. Multi-session behavior
 
@@ -140,12 +194,17 @@ Session A crashes
   -> Session B waits or is rejected
 
 lease_expires_at passes
-  -> Session B takeover succeeds
-  -> Session B resumes, inspects dirty operations
+  -> Session B resume takeover succeeds
+  -> Session B inspects dirty operations
+
+Session A disappears but lease is still valid
+  -> user explicitly confirms A cannot continue
+  -> Session B resume --force-takeover succeeds
+  -> TASK_TAKEOVER records forced=true
 ```
 
 A session may hold at most one `active_task` at a time in V1.  Multiple tasks
-per workspace are supported; each task has its own state and lease.
+per workspace are supported; each task has its own owner and lease.
 
 A session file records only:
 
@@ -203,19 +262,23 @@ Action:
    valid.
 4. Never overwrite revision 19 using the old revision-18 data.
 
-### Case B: lease conflict
+### Case B: lease / ownership conflict
 
-Symptom:
+Symptoms include:
 
 ```text
 [lease_conflict] task task-x is leased to session sr-A until ...
+[lease_conflict] task task-x is owned by session sr-A; --session-id is required ...
+[lease_conflict] task task-x is unowned; attach-session or resume is required ...
 ```
 
 Action:
 
 1. Do not mutate task state.
-2. Wait for lease expiry, or
-3. Ask the user for explicit justification and use `--force-takeover`.
+2. Ensure the caller passes the correct `--session-id`.
+3. Wait for lease expiry and use `resume` or `attach-session`, or
+4. If the user explicitly confirms the previous session cannot continue, use
+   `--force-takeover` and record `TASK_TAKEOVER`.
 
 ### Case C: two processes mutate the same task
 

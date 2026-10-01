@@ -26,6 +26,7 @@ class ResumeTests(unittest.TestCase):
             helpers.cp_json(workspace, task_id, "start-step", "--step", "step-2")
             helpers.cp_json(workspace, task_id, "set-next-actions", "--action", "Implement fix")
             helpers.cp_json(workspace, task_id, "checkpoint", "--important-context", "Use stdlib only")
+            helpers.expire_lease(workspace, task_id)
 
             session_b = helpers.init_session(workspace)
             self.assertNotEqual(session_a["session_id"], session_b["session_id"])
@@ -57,6 +58,7 @@ class ResumeTests(unittest.TestCase):
             helpers.cp_json(workspace, task_id, "add-step", "--title", "Do operation")
             helpers.cp_json(workspace, task_id, "start-step", "--step", "step-1")
             helpers.cp_json(workspace, task_id, "start-operation", "--description", "Install package X")
+            helpers.expire_lease(workspace, task_id)
 
             # Simulate process death: no finish-operation call is made.
             session_b = helpers.init_session(workspace)
