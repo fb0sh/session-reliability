@@ -88,12 +88,7 @@ Never silently overwrite a newer revision.
 
 CLI option:
 
-```bash
-python scripts/checkpoint.py \
-  --workspace /work --task task-x \
-  --expected-revision 18 \
-  set-next-actions --action "..."
-```
+See `references/cli.md` for exact command syntax.
 
 If omitted, the command locks, re-reads the latest revision, and writes
 `latest + 1`.  Passing `--expected-revision` gives callers optimistic

@@ -9,8 +9,26 @@ the task recoverable when the session disappears, by storing a durable task
 record under the workspace:
 
 ```text
-<workspace-root>/.agents/store/session-reliability/
+<WORKSPACE_ROOT>/.agents/store/session-reliability/
 ```
+
+## Runtime activation
+
+Skill activation is controlled by the host Agent Runtime.
+
+Runtimes that support global, startup, or always-on skills can load this skill
+proactively at session start.
+
+In other runtimes, the skill `description` is designed to trigger for:
+
+- multi-step, multi-tool-call, multi-turn work
+- long refactors, migrations, fixes, and investigations
+- side-effecting work that may be interrupted
+- continue, resume, recover, pick up, or check previous work
+
+This skill does not claim an unconditional cross-runtime session-start hook.
+It guarantees that once activated and working, durable state can be recovered
+in a genuinely new session.
 
 ## Design constraints
 
@@ -20,35 +38,78 @@ record under the workspace:
 - No dependency on runtime-native session ids.
 - Works with Codex, Claude Code, DSH, or any other Agent runtime.
 
+## Repository layout
+
+```text
+session-reliability/
+├── SKILL.md
+├── README.md
+├── README.en.md
+├── scripts/
+│   ├── __init__.py
+│   ├── lib.py
+│   ├── init.py
+│   ├── checkpoint.py
+│   ├── resume.py
+│   └── list.py
+├── references/
+│   ├── protocol.md
+│   ├── recovery.md
+│   ├── concurrency.md
+│   ├── state-schema.md
+│   └── cli.md
+├── assets/
+│   ├── TASK.md
+│   ├── CHECKPOINT.md
+│   ├── state.json
+│   └── session.json
+└── tests/
+```
+
+`SKILL.md` is the Agent execution entry point. Detailed protocols, recovery
+algorithms, concurrency rules, schemas, and CLI details live in `references/`
+and are loaded only when needed. `assets/` contains template resources used by
+the scripts.
+
 ## Install / use
 
-Keep the skill directory together. The scripts locate their own templates
-relative to themselves; the skill does not hard-code its installation path.
+Keep the skill directory together. Bundled scripts and assets are read from
+`SKILL_ROOT`; the skill does not hard-code its installation path and does not
+assume cwd equals the skill root.
+
+Runtime state is written to:
+
+```text
+<WORKSPACE_ROOT>/.agents/store/session-reliability/
+```
 
 Minimal flow:
 
 ```bash
 # 1. initialize the store and a reliability session
-python scripts/init.py --workspace /path/to/workspace
+python "<SKILL_ROOT>/scripts/init.py" --workspace "<WORKSPACE_ROOT>"
 
 # 2. create a durable task
-python scripts/checkpoint.py --workspace /path/to/workspace create-task \
+python "<SKILL_ROOT>/scripts/checkpoint.py" \
+  --workspace "<WORKSPACE_ROOT>" create-task \
   --task-id task-20260930-223550-fix-downloader \
   --title "Fix downloader" \
   --objective "Make the downloader reliable."
 
 # 3. persist progress
-python scripts/checkpoint.py --workspace /path/to/workspace \
+python "<SKILL_ROOT>/scripts/checkpoint.py" \
+  --workspace "<WORKSPACE_ROOT>" \
   --task task-20260930-223550-fix-downloader \
   add-step --title "Analyze logs"
 
 # 4. resume from a fresh session
-python scripts/resume.py --workspace /path/to/workspace \
-  --session-id <new-session-id> \
+python "<SKILL_ROOT>/scripts/resume.py" \
+  --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   --task task-20260930-223550-fix-downloader
 ```
 
-See `SKILL.md` for Agent behavior and `references/` for the complete protocol.
+See `SKILL.md` for Agent behavior and `references/cli.md` for exact commands.
 
 ## Scripts
 
@@ -82,6 +143,8 @@ The test suite includes init, task creation, progress, fresh-session resume,
 dirty-operation recovery, operation success, lease blocking/takeover, revision
 conflicts, atomic writes, missing index rebuild, multiple unfinished tasks,
 corrupted `STATE.json`, and a full crash/takeover/completion integration test.
+It also includes skill structure tests for frontmatter, resource layout,
+reference links, and script cwd independence.
 
 ## Safety
 

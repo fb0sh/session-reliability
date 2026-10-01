@@ -52,10 +52,7 @@ dirty recovery, or when `STATE.json` is damaged.
 
 CLI:
 
-```bash
-python scripts/init.py --workspace /work
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x
-```
+See `references/cli.md` for exact command syntax.
 
 Normal recovery requires no event replay.
 
@@ -94,17 +91,7 @@ It never transitions an unresolved operation to `succeeded` automatically.
 
 Example:
 
-```bash
-# after inspection confirms the package was installed
-python scripts/checkpoint.py --workspace /work --task task-x \
-  finish-operation --operation-id op-1 --outcome succeeded \
-  --result-summary "Package present after external inspection"
-
-# if inspection cannot determine
-python scripts/checkpoint.py --workspace /work --task task-x \
-  finish-operation --operation-id op-2 --outcome outcome_unknown \
-  --result-summary "Inspection was inconclusive"
-```
+See `references/cli.md` for exact command syntax.
 
 ## 4. `outcome_unknown` handling
 
@@ -153,13 +140,7 @@ owner != current session and lease missing/expired
 
 CLI recovery:
 
-```bash
-# may fail if lease is still valid
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x
-
-# explicit, justified override only
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x --force-takeover
-```
+See `references/cli.md` for exact command syntax.
 
 Takeover always appends `TASK_TAKEOVER` and updates the session's
 `active_task`.
@@ -206,9 +187,7 @@ an automatic authority.
 
 Example command that returns recovery info:
 
-```bash
-python scripts/resume.py --workspace /work --task task-x
-```
+See `references/cli.md` for exact command syntax.
 
 On corruption, stderr includes an error and a JSON `recovery` object containing
 paths and event hints, while the damaged `STATE.json` remains untouched.  A
@@ -252,10 +231,7 @@ If a new session finds multiple unfinished tasks:
 
 CLI:
 
-```bash
-python scripts/list.py --workspace /work --unfinished
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x
-```
+See `references/cli.md` for exact command syntax.
 
 ## 10. External state revalidation
 

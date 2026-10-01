@@ -3,6 +3,20 @@
 All structured persisted files use `schema_version: 1` for V1.  This document
 describes the exact schemas implemented by the scripts.
 
+## Contents
+
+- [1. Timestamps](#1-timestamps)
+- [2. IDs](#2-ids)
+- [3. Schema versions and compatibility](#3-schema-versions-and-compatibility)
+- [4. Store index schema](#4-store-index-schema)
+- [5. Session schema](#5-session-schema)
+- [6. Task state schema](#6-task-state-schema)
+- [7. Step schema](#7-step-schema)
+- [8. Operation schema](#8-operation-schema)
+- [9. Event schema](#9-event-schema)
+- [10. Markdown schemas](#10-markdown-schemas)
+- [11. Secrets](#11-secrets)
+
 ## 1. Timestamps
 
 All timestamps are offset-aware ISO 8601 timestamps.  The implementation emits

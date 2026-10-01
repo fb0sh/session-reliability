@@ -10,8 +10,24 @@ Conversation Session 是临时的执行载体；Persistent Task 是可以跨 Ses
 默认运行时数据目录：
 
 ```text
-<workspace-root>/.agents/store/session-reliability/
+<WORKSPACE_ROOT>/.agents/store/session-reliability/
 ```
+
+## Runtime activation
+
+Skill activation 由 Host Agent Runtime 控制。
+
+支持 global / startup / always-on Skills 的 Runtime，可以在 session 开始时主动加载本 Skill。
+
+其他 Runtime 下，本 Skill 的 `description` 针对以下场景设计触发：
+
+- 多步骤、多 tool call、多轮工作
+- 长任务、重构、迁移、修复
+- 可能被中断的 side-effect work
+- continue / resume / recover / pick up previous work
+
+本 Skill 自身不宣称拥有跨 Runtime 的无条件 session-start hook；它保证的是：
+一旦被激活并开始工作，持久化状态可以在后续真正的新 Session 中被恢复。
 
 ## 设计约束
 
@@ -21,34 +37,74 @@ Conversation Session 是临时的执行载体；Persistent Task 是可以跨 Ses
 - 不依赖 Runtime 原生 session id。
 - 可用于 Codex、Claude Code、DSH 或其他 Agent Runtime。
 
+## 目录结构
+
+```text
+session-reliability/
+├── SKILL.md
+├── README.md
+├── README.en.md
+├── scripts/
+│   ├── __init__.py
+│   ├── lib.py
+│   ├── init.py
+│   ├── checkpoint.py
+│   ├── resume.py
+│   └── list.py
+├── references/
+│   ├── protocol.md
+│   ├── recovery.md
+│   ├── concurrency.md
+│   ├── state-schema.md
+│   └── cli.md
+├── assets/
+│   ├── TASK.md
+│   ├── CHECKPOINT.md
+│   ├── state.json
+│   └── session.json
+└── tests/
+```
+
+`SKILL.md` 是 Agent 执行入口；详细协议、恢复算法、并发规则、schema 和 CLI 放在 `references/` 中按需读取。
+`assets/` 是脚本使用的模板资源。
+
 ## 安装 / 使用
 
-保持整个 Skill 目录结构完整。脚本通过自身位置定位模板，不写死安装路径。
+保持整个 Skill 目录结构完整。bundled scripts 和 assets 从 `SKILL_ROOT` 读取，不写死安装路径，也不假设 cwd 等于 Skill 根目录。
+
+运行时数据写入：
+
+```text
+<WORKSPACE_ROOT>/.agents/store/session-reliability/
+```
 
 最小流程：
 
 ```bash
 # 1. 初始化 store 和一个 reliability session
-python scripts/init.py --workspace /path/to/workspace
+python "<SKILL_ROOT>/scripts/init.py" --workspace "<WORKSPACE_ROOT>"
 
 # 2. 创建持久任务
-python scripts/checkpoint.py --workspace /path/to/workspace create-task \
+python "<SKILL_ROOT>/scripts/checkpoint.py" \
+  --workspace "<WORKSPACE_ROOT>" create-task \
   --task-id task-20260930-223550-fix-downloader \
   --title "修复下载器" \
   --objective "让下载器稳定可靠。"
 
 # 3. 持久化进度
-python scripts/checkpoint.py --workspace /path/to/workspace \
+python "<SKILL_ROOT>/scripts/checkpoint.py" \
+  --workspace "<WORKSPACE_ROOT>" \
   --task task-20260930-223550-fix-downloader \
   add-step --title "分析日志"
 
 # 4. 从全新 Session 恢复
-python scripts/resume.py --workspace /path/to/workspace \
-  --session-id <new-session-id> \
+python "<SKILL_ROOT>/scripts/resume.py" \
+  --workspace "<WORKSPACE_ROOT>" \
+  --session-id "<SESSION_ID>" \
   --task task-20260930-223550-fix-downloader
 ```
 
-完整 Agent 行为见 `SKILL.md`，完整协议见 `references/`。
+完整 Agent 行为见 `SKILL.md`，精确 CLI 见 `references/cli.md`。
 
 ## 脚本
 
@@ -78,6 +134,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 测试覆盖 init、创建任务、进度、新 Session 恢复、dirty operation 恢复、operation 成功、lease 阻止/接管、revision 冲突、原子写、缺失 index 重建、多未完成任务、损坏 `STATE.json`，以及完整 crash/takeover/completion 集成流程。
+另外包含 Skill frontmatter、资源结构、reference 链接、script cwd independence 的结构测试。
 
 ## 安全
 

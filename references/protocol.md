@@ -2,6 +2,21 @@
 
 This document defines the V1 lifecycle rules implemented by `session-reliability`.
 
+## Contents
+
+- [1. Entity relationship](#1-entity-relationship)
+- [2. Workspace and store resolution](#2-workspace-and-store-resolution)
+- [3. Session lifecycle](#3-session-lifecycle)
+- [4. Task lifecycle](#4-task-lifecycle)
+- [5. User turn lifecycle](#5-user-turn-lifecycle)
+- [6. Session start and task selection](#6-session-start-and-task-selection)
+- [7. Resume lifecycle](#7-resume-lifecycle)
+- [8. Checkpoint lifecycle](#8-checkpoint-lifecycle)
+- [9. Side-effect lifecycle](#9-side-effect-lifecycle)
+- [10. Takeover lifecycle](#10-takeover-lifecycle)
+- [11. Completion lifecycle](#11-completion-lifecycle)
+- [12. Event log](#12-event-log)
+
 ## 1. Entity relationship
 
 ```text
@@ -59,11 +74,7 @@ flowchart LR
 
 Commands:
 
-```bash
-python scripts/init.py --workspace /work
-python scripts/init.py --workspace /work --session-id sr-20260930-223501-a7f3
-python scripts/init.py --workspace /work --native-session-id runtime-123
-```
+See `references/cli.md` for exact command syntax.
 
 `init.py` never randomly binds a task when multiple unfinished tasks exist.
 
@@ -104,22 +115,11 @@ abandoned
 
 Task creation:
 
-```bash
-python scripts/checkpoint.py --workspace /work create-task \
-  --task-id task-20260930-223550-fix-downloader \
-  --title "Fix downloader" \
-  --objective "Make the downloader reliable." \
-  --requirement "Handle 404 responses." \
-  --constraint "Use Python stdlib only." \
-  --success-criterion "Two sessions complete the task safely."
-```
+See `references/cli.md` for exact command syntax.
 
 Completion:
 
-```bash
-python scripts/checkpoint.py --workspace /work --task task-20260930-223550-fix-downloader \
-  set-status --status completed
-```
+See `references/cli.md` for exact command syntax.
 
 Completion is refused while `dirty=true` or unresolved operations exist.
 
@@ -147,21 +147,7 @@ sequenceDiagram
 
 Commands used during a turn:
 
-```bash
-# add/start/complete work
-python scripts/checkpoint.py --workspace /work --task <id> add-step --title "Analyze logs"
-python scripts/checkpoint.py --workspace /work --task <id> start-step --step step-1
-python scripts/checkpoint.py --workspace /work --task <id> complete-step --step step-1 --summary "..."
-
-# update durable definition
-python scripts/checkpoint.py --workspace /work --task <id> update-requirements \
-  --requirement "New requirement." --constraint "New constraint."
-
-# record facts, decisions, next actions
-python scripts/checkpoint.py --workspace /work --task <id> record-finding --summary "..."
-python scripts/checkpoint.py --workspace /work --task <id> record-decision --summary "..."
-python scripts/checkpoint.py --workspace /work --task <id> set-next-actions --action "..."
-```
+See `references/cli.md` for exact command syntax.
 
 ## 6. Session start and task selection
 
@@ -221,10 +207,7 @@ flowchart TD
 
 Resume command:
 
-```bash
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x
-python scripts/resume.py --workspace /work --session-id sr-B --latest
-```
+See `references/cli.md` for exact command syntax.
 
 Resume JSON includes at least:
 
@@ -323,9 +306,7 @@ sequenceDiagram
 
 Forced takeover is available only as an explicit override:
 
-```bash
-python scripts/resume.py --workspace /work --session-id sr-B --task task-x --force-takeover
-```
+See `references/cli.md` for exact command syntax.
 
 ## 11. Completion lifecycle
 

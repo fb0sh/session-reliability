@@ -654,7 +654,7 @@ def append_event(task_dir_path: Path, event_type: str, **fields: Any) -> dict[st
 
 
 # ---------------------------------------------------------------------------
-# Markdown templates and rendering
+# Bundled assets and rendering
 # ---------------------------------------------------------------------------
 
 
@@ -662,16 +662,16 @@ def skill_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def template_path(name: str) -> Path:
-    return skill_root() / "templates" / name
+def asset_path(name: str) -> Path:
+    return skill_root() / "assets" / name
 
 
-def read_template(name: str) -> str:
-    path = template_path(name)
+def read_asset(name: str) -> str:
+    path = asset_path(name)
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise StoreError(f"skill template not found: {path}") from exc
+        raise StoreError(f"skill asset not found: {path}") from exc
 
 
 def _render(template: str, values: dict[str, str]) -> str:
@@ -707,7 +707,7 @@ def render_task_md(
         "success_criteria": _format_bullets(success_criteria),
         "created_at": created_at or now_iso(),
     }
-    return _render(read_template("TASK.md"), values)
+    return _render(read_asset("TASK.md"), values)
 
 
 def parse_markdown_sections(text: str) -> dict[str, list[str]]:
@@ -865,7 +865,7 @@ def render_checkpoint_md(state: dict[str, Any], *, updated_at: Optional[str] = N
         "unresolved_operations": unresolved_text,
         "important_context": context_text,
     }
-    return _render(read_template("CHECKPOINT.md"), values)
+    return _render(read_asset("CHECKPOINT.md"), values)
 
 
 def write_checkpoint(store: Path, task_id: str, state: dict[str, Any]) -> None:
