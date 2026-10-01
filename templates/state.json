@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "task_id": "task-YYYYMMDD-HHMMSS-slug",
+  "title": "Short task title",
+  "status": "pending",
+  "revision": 1,
+  "objective": "Durable task objective.",
+  "current_step": null,
+  "steps": [
+    {
+      "id": "step-1",
+      "title": "Example step",
+      "status": "pending",
+      "summary": null
+    }
+  ],
+  "next_actions": [],
+  "owner_session": null,
+  "lease_expires_at": null,
+  "dirty": false,
+  "active_operation": null,
+  "operations": [],
+  "requirements": [],
+  "constraints": [],
+  "success_criteria": [],
+  "facts": [],
+  "decisions": [],
+  "blockers": [],
+  "important_context": [],
+  "created_at": "2026-09-30T22:35:50Z",
+  "updated_at": "2026-09-30T22:35:50Z"
+}
