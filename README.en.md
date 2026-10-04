@@ -44,6 +44,16 @@ in the session catalog and cannot be auto-loaded.  Once installed, DSH exposes
 its `description` to the model for routing; users may also invoke
 `/session-reliability` explicitly.
 
+If the model still does not route to it automatically, add this to the
+project's root `AGENTS.md`:
+
+```markdown
+For any non-trivial multi-step project work, load and follow the
+`session-reliability` skill before starting.
+```
+
+That gives the Agent an explicit project-level instruction to load the skill.
+
 ## Crash-safe process locks
 
 Linux/macOS use kernel-backed `flock`.  Windows uses kernel-backed file

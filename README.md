@@ -40,6 +40,15 @@ Skill activation 由 Host Agent Runtime 控制。
 
 如果 `session-reliability` 不在这些目录中，它不会出现在 session catalog，也就不会被自动加载。安装后，DSH 会根据 `description` 让模型按需调用；用户也可以用 `/session-reliability` 显式加载。
 
+如果模型仍然没有自动路由，可以在项目根目录的 `AGENTS.md` 中加入：
+
+```markdown
+For any non-trivial multi-step project work, load and follow the
+`session-reliability` skill before starting.
+```
+
+这会让 Agent 在项目上下文中始终看到明确的加载指令。
+
 ## Crash-safe process locks
 
 Linux / macOS 使用 kernel-backed `flock`；Windows 使用 kernel-backed 文件锁。
