@@ -44,6 +44,14 @@ in the session catalog and cannot be auto-loaded.  Once installed, DSH exposes
 its `description` to the model for routing; users may also invoke
 `/session-reliability` explicitly.
 
+If it was installed as a git submodule under `~/.agents/skill-bundles`, update
+it with:
+
+```bash
+cd ~/.agents/skill-bundles
+git submodule update --remote agent-session/session-reliability
+```
+
 If the model still does not route to it automatically, add this to the
 project's root `AGENTS.md`:
 

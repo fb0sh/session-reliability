@@ -40,6 +40,13 @@ Skill activation 由 Host Agent Runtime 控制。
 
 如果 `session-reliability` 不在这些目录中，它不会出现在 session catalog，也就不会被自动加载。安装后，DSH 会根据 `description` 让模型按需调用；用户也可以用 `/session-reliability` 显式加载。
 
+如果通过 `~/.agents/skill-bundles` 的 git submodule 安装，更新命令是：
+
+```bash
+cd ~/.agents/skill-bundles
+git submodule update --remote agent-session/session-reliability
+```
+
 如果模型仍然没有自动路由，可以在项目根目录的 `AGENTS.md` 中加入：
 
 ```markdown
