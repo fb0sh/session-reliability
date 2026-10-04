@@ -191,6 +191,15 @@ python3 -m unittest discover -s tests -v
 
 `tests/` 验证的是**脚本实现**是否正确。`evals/evals.json` 是另一回事：它给出真实用户口吻的任务 prompt 与可程序化判定的 expectations，用来衡量**模型拿到这个 Skill 后是否比不拿更好**（skill-creator 的评测循环）。两者互补，改脚本跑前者，改 `SKILL.md` 的措辞跑后者。
 
+`evals/trigger-eval.json` 则用来衡量 **description 的触发准确度**：10 条该触发 + 10 条不该触发（后者是共享关键词的近义陷阱，例如「继续刚才那个笑话」）。改了 description 就跑一次，确认灵敏度没掉、特异度没退：
+
+```bash
+cd <SKILL_CREATOR> && python -m scripts.run_eval \
+  --eval-set <SKILL_ROOT>/evals/trigger-eval.json \
+  --skill-path <SKILL_ROOT> \
+  --model <模型> --runs-per-query 3
+```
+
 ## 安全
 
 不要把 password、token、API key、credential、private key 等 secrets 写入任务状态、checkpoint 或事件日志。

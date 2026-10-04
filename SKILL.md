@@ -1,13 +1,15 @@
 ---
 name: session-reliability
 description: >-
-  Durable task tracking for non-trivial project work. Use proactively for any
-  software project, feature, bug fix, refactor, migration, investigation, or
-  automation that touches files, runs commands or tools, modifies external
-  state, spans multiple turns, or may be interrupted. Also use when starting
-  or continuing multi-step work, and when the user asks to continue, resume,
-  recover, pick up, or check progress on prior work. Do not wait for the user
-  to explicitly ask for persistence.
+  Durable task tracking for non-trivial, multi-step project work. Use
+  proactively for any software project, feature, bug fix, refactor, migration,
+  investigation, or automation that touches files, runs commands or tools,
+  modifies external state, spans multiple turns, or may be interrupted. Also
+  use when starting or continuing multi-step work, and when the user asks to
+  continue, resume, recover, pick up, or check progress on prior work — meaning
+  unfinished work from an earlier session, not a conversational thread. Do not
+  wait for the user to explicitly ask for persistence. Not for a single one-off
+  file conversion, a one-line question, or small talk.
 compatibility: Requires filesystem read/write access and Python 3.10+.
 ---
 

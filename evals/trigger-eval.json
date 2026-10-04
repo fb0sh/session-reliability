@@ -1,0 +1,23 @@
+[
+  {"query": "我上次那个重构做到一半被打断了，帮我接着做完，代码就在 src/ 下面", "should_trigger": true},
+  {"query": "帮我给这个项目加一层缓存，要改好几个文件，中途可能会断", "should_trigger": true},
+  {"query": "把这个 monorepo 从 npm 迁到 pnpm，依赖挺多的，估计得弄一阵", "should_trigger": true},
+  {"query": "接着上次的活干，我看你之前建了个 task 记录，进度到哪了？", "should_trigger": true},
+  {"query": "帮我排查一下生产环境这个内存泄漏，要连着跑几轮压测，中间别丢了线索", "should_trigger": true},
+  {"query": "写个脚本把这 2000 条记录清洗完导进数据库，跑之前先记好状态，断了能续", "should_trigger": true},
+  {"query": "我想让你分几步把这个老的 Flask 应用重写成 FastAPI，边做边记进度", "should_trigger": true},
+  {"query": "帮我把 CI 从 Travis 换成 GitHub Actions，改完还要跑通", "should_trigger": true},
+  {"query": "上次会话崩了，我这个项目做到哪了？继续吧", "should_trigger": true},
+  {"query": "这个 bug 有点难查，可能要来回试几次，别做到一半忘了前面查过什么", "should_trigger": true},
+
+  {"query": "帮我总结一下 git 的 rebase 和 merge 有什么区别，简单说说就行", "should_trigger": false},
+  {"query": "把这个字符串反转一下：hello", "should_trigger": false},
+  {"query": "解释一下这段正则 /\\d{4}-\\d{2}/ 是什么意思", "should_trigger": false},
+  {"query": "我 Jira 里有个 task 状态不对，怎么改成 In Progress？", "should_trigger": false},
+  {"query": "帮我把这份会议纪要整理成要点", "should_trigger": false},
+  {"query": "Python 里怎么把日志记录到文件？给个例子", "should_trigger": false},
+  {"query": "继续刚才那个笑话", "should_trigger": false},
+  {"query": "这条 SQL 查询怎么优化？就一条语句", "should_trigger": false},
+  {"query": "帮我把这个 CSV 转成 Excel，就一个文件", "should_trigger": false},
+  {"query": "把这段中文翻译成英文", "should_trigger": false}
+]
