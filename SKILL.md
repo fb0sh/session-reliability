@@ -1,12 +1,13 @@
 ---
 name: session-reliability
 description: >-
-  Persist and recover long-running, multi-step agent work across conversation
-  loss, session failure, context loss, runtime restarts, and session handoff.
-  Use proactively for work that requires multiple meaningful steps or tool
-  calls, spans multiple turns, modifies external state, may be interrupted, or
-  continues prior work in the same workspace. Also use when the user asks to
-  continue, resume, recover, pick up, or check progress on previous work.
+  Durable task tracking for non-trivial project work. Use proactively for any
+  software project, feature, bug fix, refactor, migration, investigation, or
+  automation that touches files, runs commands or tools, modifies external
+  state, spans multiple turns, or may be interrupted. Also use when starting
+  or continuing multi-step work, and when the user asks to continue, resume,
+  recover, pick up, or check progress on prior work. Do not wait for the user
+  to explicitly ask for persistence.
 compatibility: Requires filesystem read/write access and Python 3.10+.
 ---
 

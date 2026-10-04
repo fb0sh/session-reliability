@@ -30,6 +30,20 @@ This skill does not claim an unconditional cross-runtime session-start hook.
 It guarantees that once activated and working, durable state can be recovered
 in a genuinely new session.
 
+For example, DSH scans these local skill roots:
+
+```text
+<projectRoot>/.dsh/skills/
+<projectRoot>/.agents/skills/
+~/.dsh/skills/
+~/.agents/skills/
+```
+
+If `session-reliability` is not installed under one of these roots, it is not
+in the session catalog and cannot be auto-loaded.  Once installed, DSH exposes
+its `description` to the model for routing; users may also invoke
+`/session-reliability` explicitly.
+
 ## Crash-safe process locks
 
 Linux/macOS use kernel-backed `flock`.  Windows uses kernel-backed file

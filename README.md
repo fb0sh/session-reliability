@@ -29,6 +29,17 @@ Skill activation 由 Host Agent Runtime 控制。
 本 Skill 自身不宣称拥有跨 Runtime 的无条件 session-start hook；它保证的是：
 一旦被激活并开始工作，持久化状态可以在后续真正的新 Session 中被恢复。
 
+例如 DSH 会扫描以下本地 Skill roots：
+
+```text
+<projectRoot>/.dsh/skills/
+<projectRoot>/.agents/skills/
+~/.dsh/skills/
+~/.agents/skills/
+```
+
+如果 `session-reliability` 不在这些目录中，它不会出现在 session catalog，也就不会被自动加载。安装后，DSH 会根据 `description` 让模型按需调用；用户也可以用 `/session-reliability` 显式加载。
+
 ## Crash-safe process locks
 
 Linux / macOS 使用 kernel-backed `flock`；Windows 使用 kernel-backed 文件锁。
