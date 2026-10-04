@@ -4,6 +4,9 @@
 
 [English README](README.en.md)
 
+> `SKILL.md` 与 `references/` 是 Agent 执行时的**权威规范**；本 README 只是给人看的概览。
+> 两者若有出入，以 `SKILL.md` 为准。
+
 Conversation Session 是临时的执行载体；Persistent Task 是可以跨 Session 存续的工作对象。
 本 Skill 通过工作区中的持久化数据，让任务在 Session 崩溃、Runtime 重启、Context 丢失后仍能被全新 Agent 恢复并继续。
 
@@ -185,6 +188,8 @@ python3 -m unittest discover -s tests -v
 
 测试覆盖 init、创建任务、进度、新 Session 恢复、dirty operation 恢复、operation 成功、lease 阻止/接管、revision 冲突、原子写、缺失 index 重建、多未完成任务、损坏 `STATE.json`，以及完整 crash/takeover/completion 集成流程。
 另外包含 Skill frontmatter、资源结构、reference 链接、script cwd independence 的结构测试，以及 session ownership、lease 自动续期、force takeover、native session id 复用/冲突和多 Session 隔离测试。
+
+`tests/` 验证的是**脚本实现**是否正确。`evals/evals.json` 是另一回事：它给出真实用户口吻的任务 prompt 与可程序化判定的 expectations，用来衡量**模型拿到这个 Skill 后是否比不拿更好**（skill-creator 的评测循环）。两者互补，改脚本跑前者，改 `SKILL.md` 的措辞跑后者。
 
 ## 安全
 

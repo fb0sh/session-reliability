@@ -1,0 +1,60 @@
+{
+  "skill_name": "session-reliability",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我把这个 Python 小工具重构一下：拆成模块、补上单元测试、更新文档，最后把测试跑通。这是个多步骤的活，中途别丢进度。",
+      "expected_output": "A refactored multi-module package with unit tests and updated docs, tests passing; durable task state under .agents/store/session-reliability showing the multi-step work completed cleanly.",
+      "files": [
+        "todo.py"
+      ],
+      "expectations": [
+        "A durable task store was created at .agents/store/session-reliability",
+        "At least one durable task reached status completed",
+        "Every step in the completed task is marked completed",
+        "Final task state is clean: dirty=false and active_operation=null",
+        "The completed task's STATE.json uses exactly the documented schema keys",
+        "The refactor produced a Python package with more than one module",
+        "Unit tests exist and the test command exits 0",
+        "The todo CLI still runs after the refactor (list exits 0)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我上次那个数据迁移的活好像没做完，接着把它干完。数据在 data/ 下面。",
+      "expected_output": "The interrupted migration is resumed from persisted state: the stale running operation is conservatively downgraded, its true outcome is established by inspecting external state before any retry, the import runs exactly once, and the task ends completed with dirty=false.",
+      "files": [
+        ".agents/store/session-reliability/**",
+        "data/legacy_export.csv",
+        "data/migrate.py"
+      ],
+      "expectations": [
+        "The pre-existing task task-20261004-050000-migrate was resumed and now has status completed",
+        "The stale running operation was never marked succeeded; its true outcome was recorded only after external revalidation",
+        "Every operation state is a documented enum value (planned/running/succeeded/failed/outcome_unknown)",
+        "The import ran exactly once: warehouse.log holds exactly 3 imported lines",
+        "Final task state is clean: dirty=false and active_operation=null",
+        "All three steps of the resumed task are completed",
+        "A reliability session attached to the existing task (SESSION_ATTACHED or TASK_TAKEOVER event)",
+        "No new durable task was created: the store still holds exactly one task"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "把 rename_me/ 里的文件按顺序批量重命名成 photo-001.txt 这种格式，然后跑一次 migrate.py 把记录导入。这活中途可能会断，注意别重复执行。",
+      "expected_output": "Files renamed to photo-00N.txt, migrate.py run exactly once, and each external side effect recorded before and after execution with dirty set then cleared.",
+      "files": [
+        "rename_me/*.txt",
+        "migrate.py"
+      ],
+      "expectations": [
+        "All six files were renamed to photo-001.txt .. photo-006.txt",
+        "migrate.py ran exactly once: warehouse.log holds exactly 6 imported lines",
+        "At least one OPERATION_STARTED event was recorded",
+        "Every started operation has a terminal outcome event (SUCCEEDED/FAILED/OUTCOME_UNKNOWN)",
+        "Final task state is clean: dirty=false and active_operation=null",
+        "A durable task store was created at .agents/store/session-reliability"
+      ]
+    }
+  ]
+}

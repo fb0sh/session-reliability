@@ -276,6 +276,17 @@ re-rendered after every mutation so it cannot lag behind the response.
 
 ## 9. Side-effect lifecycle
 
+An operation is recorded only for actions that change state outside the
+conversation and are not safely repeatable — non-idempotent scripts, publishes,
+sends, installs, deletions, remote mutations, service start/stop.  Ordinary
+file edits are step work and stay out of the ledger, so the bookkeeping does
+not outgrow the work it protects.
+
+The point of the ledger is the crash case: a persisted `running` operation is
+the only evidence that an action may already have taken effect, and it is what
+lets a later session inspect before retrying instead of duplicating a
+non-idempotent effect.
+
 ```mermaid
 stateDiagram-v2
     [*] --> planned: optional

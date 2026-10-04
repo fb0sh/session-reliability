@@ -4,6 +4,10 @@ A runtime-agnostic Agent Skill for durable, multi-session tasks.
 
 [中文说明](README.md)
 
+> `SKILL.md` and `references/` are the authoritative specification the agent
+> executes. This README is a human-facing overview; where they disagree,
+> `SKILL.md` wins.
+
 A conversation session is temporary. A task is persistent. This skill keeps
 the task recoverable when the session disappears, by storing a durable task
 record under the workspace:
@@ -221,6 +225,12 @@ It also includes skill structure tests for frontmatter, resource layout,
 reference links, and script cwd independence, plus session ownership, automatic
 lease renewal, force takeover, native-session-id reuse/conflict, and
 multi-session isolation tests.
+
+`tests/` verifies the **script implementation**. `evals/evals.json` is a
+different thing: realistic user-voice prompts with programmatically checkable
+expectations, used to measure whether **a model given this skill does better
+than one without it** (the skill-creator eval loop). Change the scripts and run
+the former; change the wording of `SKILL.md` and run the latter.
 
 ## Safety
 

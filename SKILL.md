@@ -72,7 +72,24 @@ Checkpoint after meaningful progress such as:
 Keep `current_step` and `next_actions` synchronized with actual work. Persist
 important user corrections so they survive the current conversation.
 
+Mark a step `in_progress` before you begin it, and complete it when it is done.
+Completing a step that was never started leaves its start time empty, so an
+interruption during that window resumes from an earlier step than the work
+actually reached.
+
 ## Side effects
+
+A side effect is an action that changes state outside the conversation and is
+not safely repeatable: running a non-idempotent script, publishing or sending
+something, installing, deleting, mutating remote state, or starting and
+stopping a service. Editing the files you are working on is ordinary step work,
+not a side effect — recording every write costs more than it saves, and the
+step record already covers it.
+
+Record the operation *before* you act. After a crash, nobody can tell from the
+workspace alone whether the action ran; a persisted `running` operation is what
+lets a later session stop and inspect instead of guessing, and a wrong guess on
+a non-idempotent action duplicates its effect.
 
 Before an external side effect, persist the operation as running and mark the
 task dirty.
