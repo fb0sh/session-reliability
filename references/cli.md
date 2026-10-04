@@ -336,6 +336,13 @@ python "<SKILL_ROOT>/scripts/resume.py" \
 `active_task`.  If a running operation is discovered, it is conservatively
 marked `outcome_unknown` and the task stays dirty until explicitly finished.
 
+`--latest` selects the most recently updated unfinished task.  Timestamps have
+second granularity, so when several unfinished tasks share the most recent
+update time the choice is ambiguous: `resume.py` then fails with
+`multiple unfinished tasks share the most recent update time` and lists the
+candidates instead of binding to one arbitrarily.  Pass `--task` explicitly in
+that case.
+
 `--force-takeover` is appropriate when the user explicitly confirms that the
 previous session failed, became unavailable, or cannot continue.  It records
 `TASK_TAKEOVER` with `forced=true` even if the previous lease is still valid.

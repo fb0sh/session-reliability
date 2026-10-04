@@ -1833,9 +1833,31 @@ def choose_task(store: Path, task_id: Optional[str] = None, *, latest: bool = Fa
     if latest:
         if not candidates:
             raise TaskNotFound("no unfinished task available")
-        # list_tasks is already sorted by status rank then updated_at descending?
-        # _state_sort_key uses ascending string, so sort explicitly here.
-        candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        # _state_sort_key uses an ascending string, so sort explicitly here.
+        # The task id is the secondary key so the ranking is deterministic.
+        candidates.sort(
+            key=lambda item: (
+                str(item.get("updated_at") or ""),
+                str(item.get("task_id") or ""),
+            ),
+            reverse=True,
+        )
+        # Timestamps have second granularity, so two tasks touched within the
+        # same second are indistinguishable.  Never break such a tie silently:
+        # that can resume a different task than the one just worked on.  Present
+        # the candidates instead, matching the "do not randomly bind" rule.
+        newest = str(candidates[0].get("updated_at") or "")
+        tied = [
+            str(item.get("task_id"))
+            for item in candidates
+            if str(item.get("updated_at") or "") == newest
+        ]
+        if len(tied) > 1:
+            raise ValidationError(
+                "multiple unfinished tasks share the most recent update time; "
+                "specify --task",
+                details={"candidates": tied, "updated_at": newest},
+            )
         return str(candidates[0]["task_id"])
     if len(candidates) == 1:
         return str(candidates[0]["task_id"])

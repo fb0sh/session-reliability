@@ -110,5 +110,74 @@ class ResumeTests(unittest.TestCase):
             self.assertIn("STATE_CORRUPTION_DETECTED", event_types)
 
 
+    def test_latest_refuses_same_second_tie_and_binds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            helpers.init_session(workspace)
+            first = "task-20260930-021000-first"
+            second = "task-20260930-021100-second"
+            helpers.create_task(workspace, first, title="First Task", objective="First.")
+            helpers.create_task(workspace, second, title="Second Task", objective="Second.")
+            owners_before = {
+                task_id: helpers.state_of(workspace, task_id)["owner_session"]
+                for task_id in (first, second)
+            }
+            statuses_before = {
+                task_id: helpers.state_of(workspace, task_id)["status"]
+                for task_id in (first, second)
+            }
+
+            # updated_at has second granularity, so two tasks touched within the
+            # same second cannot be ordered; force the tie deterministically.
+            stamp = "2026-09-30T02:11:00+00:00"
+            for task_id in (first, second):
+                state_path = helpers.task_dir(workspace, task_id) / "STATE.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["updated_at"] = stamp
+                state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+            result = helpers.run_script(
+                "resume.py",
+                "--workspace", str(workspace),
+                "--latest",
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("most recent update time", result.stderr)
+            self.assertIn(first, result.stderr)
+            self.assertIn(second, result.stderr)
+
+            for task_id in (first, second):
+                state = helpers.state_of(workspace, task_id)
+                self.assertEqual(state["owner_session"], owners_before[task_id])
+                self.assertEqual(state["status"], statuses_before[task_id])
+                self.assertIsNone(state["active_operation"])
+
+    def test_latest_picks_newest_when_timestamps_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            helpers.init_session(workspace)
+            older = "task-20260930-021200-older"
+            newer = "task-20260930-021300-newer"
+            helpers.create_task(workspace, older, title="Older", objective="Older.")
+            helpers.create_task(workspace, newer, title="Newer", objective="Newer.")
+            for task_id, stamp in (
+                (older, "2026-09-30T02:12:00+00:00"),
+                (newer, "2026-09-30T02:13:00+00:00"),
+            ):
+                state_path = helpers.task_dir(workspace, task_id) / "STATE.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["updated_at"] = stamp
+                state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+            result = helpers.run_json(
+                "resume.py",
+                "--workspace", str(workspace),
+                "--latest",
+                "--force-takeover",
+            )
+            self.assertEqual(result["task_id"], newer)
+
+
 if __name__ == "__main__":
     unittest.main()
