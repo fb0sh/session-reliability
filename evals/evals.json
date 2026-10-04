@@ -55,6 +55,20 @@
         "Final task state is clean: dirty=false and active_operation=null",
         "A durable task store was created at .agents/store/session-reliability"
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "帮我用标准库写一个小型 HTTP 服务，接口返回 JSON。写完你把它跑起来验证一下接口真的通，验证完记得把服务停掉，别留后台进程。最后把测试跑通。",
+      "expected_output": "A stdlib JSON service that was really started, probed over HTTP and stopped with no lingering process; the start/stop verification recorded as a side-effect operation before acting and resolved afterwards; tests passing; durable task completed and clean.",
+      "files": [],
+      "expectations": [
+        "A durable task store was created at .agents/store/session-reliability",
+        "At least one operation was recorded for running the service (OPERATION_STARTED event)",
+        "Every started operation has a terminal outcome event (SUCCEEDED/FAILED/OUTCOME_UNKNOWN)",
+        "Final task state is clean: dirty=false and active_operation=null",
+        "The durable task reached status completed",
+        "The service exists and its tests pass (unittest exits 0)"
+      ]
     }
   ]
 }
